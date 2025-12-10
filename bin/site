@@ -70,6 +70,9 @@ usage() {
     echo "  db import <name> <file>   导入数据库"
     echo "  db export <name>          导出数据库"
     echo "  db list                   列出数据库"
+    echo "  db backup-all             备份所有数据库"
+    echo "  db backups [name]         列出数据库备份"
+    echo "  db cron <hourly|daily|off> 设置自动备份"
     echo ""
     echo "PHP:"
     echo "  php list                  列出 PHP 版本"
@@ -141,11 +144,14 @@ case "$1" in
     db)
         case "$2" in
             create) db_create "$3" ;;
+            backup-all) db_backup_all ;;
+            cron) db_cron_setup "$3" ;;
+            backups) db_backups "$3" ;;
             drop) db_drop "$3" ;;
             import) db_import "$3" "$4" ;;
             export) db_export "$3" ;;
             list) db_list ;;
-            *) echo "Usage: site db <create|drop|import|export|list>" ;;
+            *) echo "Usage: site db <create|drop|import|export|list|backup-all|backups|cron>" ;;
         esac
         ;;
     php)
