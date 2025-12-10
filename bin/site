@@ -1,0 +1,187 @@
+#!/bin/bash
+#
+# Site Manager - 站点管理工具
+# https://github.com/samuel25555/site_manager
+#
+
+#set -e
+
+VERSION="1.0.0"
+
+# 解析真实路径 (处理符号链接)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
+
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+LIB_DIR="$ROOT_DIR/lib"
+CONFIG_DIR="$ROOT_DIR/config"
+
+# 加载库文件
+source "$LIB_DIR/colors.sh"
+source "$LIB_DIR/utils.sh"
+source "$LIB_DIR/site.sh"
+source "$LIB_DIR/ssl.sh"
+source "$LIB_DIR/db.sh"
+source "$LIB_DIR/backup.sh"
+source "$LIB_DIR/logs.sh"
+source "$LIB_DIR/php.sh"
+source "$LIB_DIR/proxy.sh"
+source "$LIB_DIR/docker.sh"
+source "$LIB_DIR/panel.sh"
+
+# 加载配置
+source "$CONFIG_DIR/site_manager.conf"
+
+usage() {
+    echo ""
+    echo -e "${GREEN}Site Manager v$VERSION${NC}"
+    echo ""
+    echo "Usage: site <command> [options]"
+    echo ""
+    echo "站点管理:"
+    echo "  create <domain> <type>    创建站点 (php|php:8.1|static|node|python|docker|proxy)"
+    echo "  delete <domain>           删除站点"
+    echo "  enable <domain>           启用站点"
+    echo "  disable <domain>          禁用站点"
+    echo "  list                      列出所有站点"
+    echo "  info <domain>             站点详情"
+    echo "  status [domain]           站点状态"
+    echo ""
+    echo "SSL 证书:"
+    echo "  ssl <domain>              申请 SSL 证书"
+    echo "  ssl renew                 续期所有证书"
+    echo ""
+    echo "日志:"
+    echo "  logs <domain> [-f] [-e]   查看日志 (-f 实时, -e 错误)"
+    echo ""
+    echo "备份:"
+    echo "  backup <domain>           备份站点"
+    echo "  restore <domain> <file>   恢复备份"
+    echo "  backups [domain]          列出备份"
+    echo ""
+    echo "数据库:"
+    echo "  db create <name>          创建数据库"
+    echo "  db drop <name>            删除数据库"
+    echo "  db import <name> <file>   导入数据库"
+    echo "  db export <name>          导出数据库"
+    echo "  db list                   列出数据库"
+    echo ""
+    echo "PHP:"
+    echo "  php list                  列出 PHP 版本"
+    echo "  php set <domain> <ver>    设置站点 PHP 版本"
+    echo ""
+    echo "代理:"
+    echo "  proxy <domain> target <url>   设置代理目标"
+    echo ""
+    echo "Docker:"
+    echo "  docker up <domain>        启动容器"
+    echo "  docker down <domain>      停止容器"
+    echo "  docker logs <domain>      查看日志"
+    echo ""
+    echo "服务:"
+    echo "  nginx reload|restart|test Nginx 操作"
+    echo "  supervisor reload         Supervisor 操作"
+    echo "  restart                   重启所有服务"
+    echo ""
+    echo "Web 面板:"
+    echo "  panel start [--port=8888] 启动面板"
+    echo "  panel stop                停止面板"
+    echo "  panel status              面板状态"
+    echo "  panel password            重置密码"
+    echo ""
+}
+
+# 主入口
+case "$1" in
+    create)
+        site_create "$2" "$3" "${@:4}"
+        ;;
+    delete)
+        site_delete "$2"
+        ;;
+    enable)
+        site_enable "$2"
+        ;;
+    disable)
+        site_disable "$2"
+        ;;
+    list)
+        site_list
+        ;;
+    info)
+        site_info "$2"
+        ;;
+    status)
+        site_status "$2"
+        ;;
+    ssl)
+        if [ "$2" = "renew" ]; then
+            ssl_renew
+        else
+            ssl_request "$2" "${@:3}"
+        fi
+        ;;
+    logs)
+        logs_view "$2" "${@:3}"
+        ;;
+    backup)
+        backup_create "$2"
+        ;;
+    restore)
+        backup_restore "$2" "$3"
+        ;;
+    backups)
+        backup_list "$2"
+        ;;
+    db)
+        case "$2" in
+            create) db_create "$3" ;;
+            drop) db_drop "$3" ;;
+            import) db_import "$3" "$4" ;;
+            export) db_export "$3" ;;
+            list) db_list ;;
+            *) echo "Usage: site db <create|drop|import|export|list>" ;;
+        esac
+        ;;
+    php)
+        case "$2" in
+            list) php_list ;;
+            set) php_set "$3" "$4" ;;
+            *) echo "Usage: site php <list|set>" ;;
+        esac
+        ;;
+    proxy)
+        proxy_manage "$2" "$3" "$4"
+        ;;
+    docker)
+        case "$2" in
+            up) docker_up "$3" ;;
+            down) docker_down "$3" ;;
+            logs) docker_logs "$3" ;;
+            *) echo "Usage: site docker <up|down|logs>" ;;
+        esac
+        ;;
+    nginx)
+        nginx_manage "$2"
+        ;;
+    supervisor)
+        supervisor_manage "$2"
+        ;;
+    restart)
+        services_restart
+        ;;
+    panel)
+        panel_manage "$2" "${@:3}"
+        ;;
+    -v|--version)
+        echo "Site Manager v$VERSION"
+        ;;
+    *)
+        usage
+        ;;
+esac
