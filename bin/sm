@@ -1,0 +1,644 @@
+#!/bin/bash
+#
+# Site Manager 交互式管理工具
+# 用法: sm [命令号]
+#
+
+VERSION="1.0.0"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+
+# 颜色
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+BLUE="\033[34m"
+CYAN="\033[36m"
+WHITE="\033[37m"
+NC="\033[0m"
+
+# 面板配置
+PANEL_DIR="$ROOT_DIR/panel"
+PANEL_BIN="$PANEL_DIR/site_manager_panel"
+PANEL_CONFIG="$PANEL_DIR/config/config.json"
+PANEL_DB="$PANEL_DIR/data/panel.db"
+
+# 获取面板端口
+get_panel_port() {
+    if [ -f "$PANEL_CONFIG" ]; then
+        grep -o '"port":[[:space:]]*[0-9]*' "$PANEL_CONFIG" 2>/dev/null | grep -o '[0-9]*' || echo "8888"
+    else
+        echo "8888"
+    fi
+}
+
+# 获取面板状态
+get_panel_status() {
+    if pgrep -f "site_manager_panel" > /dev/null; then
+        echo -e "${GREEN}运行中${NC}"
+    else
+        echo -e "${RED}已停止${NC}"
+    fi
+}
+
+# 获取面板 URL
+get_panel_url() {
+    local port=$(get_panel_port)
+    local ip=$(curl -s --connect-timeout 2 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+    echo "http://$ip:$port"
+}
+
+# 显示面板信息
+show_panel_info() {
+    local port=$(get_panel_port)
+    local status=$(get_panel_status)
+    local url=$(get_panel_url)
+
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 面板信息 ━━━━━━━━━━━━━━${NC}"
+    echo -e " 状态: $status"
+    echo -e " 端口: ${WHITE}$port${NC}"
+    echo -e " 地址: ${WHITE}$url${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 显示主菜单
+show_menu() {
+    clear
+    echo ""
+    echo -e "${GREEN}===============================================${NC}"
+    echo -e "${GREEN}      Site Manager 面板管理工具 v$VERSION      ${NC}"
+    echo -e "${GREEN}===============================================${NC}"
+    show_panel_info
+    echo ""
+    echo -e "${YELLOW}———————————— 面板管理 ————————————${NC}"
+    echo -e " ${WHITE}1)${NC} 启动面板"
+    echo -e " ${WHITE}2)${NC} 停止面板"
+    echo -e " ${WHITE}3)${NC} 重启面板"
+    echo -e " ${WHITE}4)${NC} 查看面板状态"
+    echo -e " ${WHITE}5)${NC} 修改面板端口"
+    echo -e " ${WHITE}6)${NC} 重置管理员密码"
+    echo -e " ${WHITE}7)${NC} 查看面板日志"
+    echo ""
+    echo -e "${YELLOW}———————————— 站点管理 ————————————${NC}"
+    echo -e " ${WHITE}10)${NC} 查看所有站点"
+    echo -e " ${WHITE}11)${NC} 创建站点"
+    echo -e " ${WHITE}12)${NC} 删除站点"
+    echo -e " ${WHITE}13)${NC} 申请 SSL 证书"
+    echo -e " ${WHITE}14)${NC} 续期 SSL 证书"
+    echo ""
+    echo -e "${YELLOW}———————————— 服务管理 ————————————${NC}"
+    echo -e " ${WHITE}20)${NC} Nginx 管理"
+    echo -e " ${WHITE}21)${NC} PHP 管理"
+    echo -e " ${WHITE}22)${NC} MySQL 管理"
+    echo -e " ${WHITE}23)${NC} Redis 管理"
+    echo ""
+    echo -e "${YELLOW}———————————— 安全管理 ————————————${NC}"
+    echo -e " ${WHITE}30)${NC} 防火墙管理"
+    echo -e " ${WHITE}31)${NC} SSH 端口修改"
+    echo -e " ${WHITE}32)${NC} 禁止 Ping"
+    echo ""
+    echo -e "${YELLOW}———————————— 系统工具 ————————————${NC}"
+    echo -e " ${WHITE}40)${NC} 系统信息"
+    echo -e " ${WHITE}41)${NC} 磁盘使用"
+    echo -e " ${WHITE}42)${NC} 内存使用"
+    echo -e " ${WHITE}43)${NC} 网络连接"
+    echo ""
+    echo -e "${YELLOW}———————————— 备份恢复 ————————————${NC}"
+    echo -e " ${WHITE}50)${NC} 备份站点"
+    echo -e " ${WHITE}51)${NC} 恢复站点"
+    echo -e " ${WHITE}52)${NC} 备份数据库"
+    echo -e " ${WHITE}53)${NC} 恢复数据库"
+    echo ""
+    echo -e " ${WHITE}0)${NC}  退出"
+    echo ""
+}
+
+# 启动面板
+start_panel() {
+    if pgrep -f "site_manager_panel" > /dev/null; then
+        echo -e "${YELLOW}面板已在运行中${NC}"
+        return
+    fi
+
+    local port=$(get_panel_port)
+    echo -e "${CYAN}正在启动面板...${NC}"
+    cd "$PANEL_DIR"
+    nohup "$PANEL_BIN" -port "$port" > /tmp/panel.log 2>&1 &
+    sleep 2
+
+    if pgrep -f "site_manager_panel" > /dev/null; then
+        echo -e "${GREEN}面板启动成功${NC}"
+        echo -e "访问地址: $(get_panel_url)"
+    else
+        echo -e "${RED}面板启动失败，请查看日志: /tmp/panel.log${NC}"
+    fi
+}
+
+# 停止面板
+stop_panel() {
+    if ! pgrep -f "site_manager_panel" > /dev/null; then
+        echo -e "${YELLOW}面板未运行${NC}"
+        return
+    fi
+
+    echo -e "${CYAN}正在停止面板...${NC}"
+    pkill -f "site_manager_panel"
+    sleep 1
+    echo -e "${GREEN}面板已停止${NC}"
+}
+
+# 重启面板
+restart_panel() {
+    echo -e "${CYAN}正在重启面板...${NC}"
+    stop_panel
+    sleep 1
+    start_panel
+}
+
+# 查看面板状态
+panel_status() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 面板状态 ━━━━━━━━━━━━━━${NC}"
+
+    if pgrep -f "site_manager_panel" > /dev/null; then
+        local pid=$(pgrep -f "site_manager_panel")
+        local port=$(get_panel_port)
+        local mem=$(ps -p $pid -o rss= 2>/dev/null | awk '{printf "%.1f MB", $1/1024}')
+        local cpu=$(ps -p $pid -o %cpu= 2>/dev/null)
+        local uptime=$(ps -p $pid -o etime= 2>/dev/null | xargs)
+
+        echo -e " 状态: ${GREEN}运行中${NC}"
+        echo -e " PID:  ${WHITE}$pid${NC}"
+        echo -e " 端口: ${WHITE}$port${NC}"
+        echo -e " 内存: ${WHITE}$mem${NC}"
+        echo -e " CPU:  ${WHITE}$cpu%${NC}"
+        echo -e " 运行: ${WHITE}$uptime${NC}"
+        echo -e " 地址: ${WHITE}$(get_panel_url)${NC}"
+    else
+        echo -e " 状态: ${RED}已停止${NC}"
+    fi
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 修改面板端口
+change_port() {
+    local current_port=$(get_panel_port)
+    echo -e "当前端口: ${WHITE}$current_port${NC}"
+    read -p "请输入新端口 (1024-65535): " new_port
+
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1024 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${RED}无效的端口号${NC}"
+        return
+    fi
+
+    # 检查端口是否被占用
+    if ss -tlnp | grep -q ":$new_port "; then
+        echo -e "${RED}端口 $new_port 已被占用${NC}"
+        return
+    fi
+
+    # 更新配置
+    if [ -f "$PANEL_CONFIG" ]; then
+        sed -i "s/\"port\":[[:space:]]*[0-9]*/\"port\": $new_port/" "$PANEL_CONFIG"
+    fi
+
+    # 更新防火墙
+    ufw allow "$new_port/tcp" comment "Site Manager Panel" 2>/dev/null
+
+    echo -e "${GREEN}端口已修改为 $new_port${NC}"
+    echo -e "${YELLOW}请重启面板使配置生效${NC}"
+}
+
+# 重置管理员密码
+reset_password() {
+    local new_pass=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+
+    if [ -f "$PANEL_DB" ]; then
+        echo -e "${CYAN}正在重置密码...${NC}"
+
+        # 生成 bcrypt hash (使用 htpasswd 或 python)
+        local hash=""
+        if command -v python3 &>/dev/null; then
+            hash=$(python3 -c "import bcrypt; print(bcrypt.hashpw('$new_pass'.encode(), bcrypt.gensalt()).decode())" 2>/dev/null)
+        fi
+
+        if [ -n "$hash" ]; then
+            sqlite3 "$PANEL_DB" "UPDATE users SET password='$hash' WHERE username='admin';" 2>/dev/null
+            echo ""
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${GREEN}  密码重置成功!${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e " 用户名: ${WHITE}admin${NC}"
+            echo -e " 新密码: ${WHITE}$new_pass${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        else
+            echo -e "${YELLOW}需要安装 python3-bcrypt: apt install python3-bcrypt${NC}"
+        fi
+    else
+        echo -e "${RED}找不到面板数据库${NC}"
+    fi
+}
+
+# 查看面板日志
+view_logs() {
+    local log_file="/tmp/panel.log"
+    if [ -f "$log_file" ]; then
+        echo -e "${CYAN}面板日志 (最近 50 行):${NC}"
+        echo ""
+        tail -50 "$log_file"
+    else
+        echo -e "${YELLOW}日志文件不存在${NC}"
+    fi
+}
+
+# 查看所有站点
+list_sites() {
+    echo ""
+    site list
+}
+
+# 创建站点
+create_site() {
+    echo ""
+    read -p "请输入域名: " domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}域名不能为空${NC}"
+        return
+    fi
+
+    echo ""
+    echo "请选择站点类型:"
+    echo " 1) PHP 站点"
+    echo " 2) 静态站点"
+    echo " 3) Node.js 站点"
+    echo " 4) Python 站点"
+    echo " 5) 反向代理"
+    read -p "请输入选项 [1]: " type_choice
+
+    case "$type_choice" in
+        2) site_type="static" ;;
+        3) site_type="node" ;;
+        4) site_type="python" ;;
+        5) site_type="proxy" ;;
+        *) site_type="php" ;;
+    esac
+
+    echo ""
+    site create "$domain" "$site_type"
+}
+
+# 删除站点
+delete_site() {
+    echo ""
+    site list
+    echo ""
+    read -p "请输入要删除的域名: " domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}域名不能为空${NC}"
+        return
+    fi
+
+    read -p "确定要删除 $domain 吗? (y/n): " confirm
+    if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
+        site delete "$domain"
+    fi
+}
+
+# SSL 证书申请
+ssl_request() {
+    echo ""
+    site list
+    echo ""
+    read -p "请输入域名: " domain
+    if [ -z "$domain" ]; then
+        echo -e "${RED}域名不能为空${NC}"
+        return
+    fi
+    site ssl "$domain"
+}
+
+# SSL 证书续期
+ssl_renew() {
+    echo ""
+    site ssl renew
+}
+
+# Nginx 管理
+nginx_menu() {
+    echo ""
+    echo " 1) 重载配置"
+    echo " 2) 重启服务"
+    echo " 3) 测试配置"
+    echo " 4) 查看状态"
+    read -p "请选择 [1]: " choice
+
+    case "$choice" in
+        2) systemctl restart nginx && echo -e "${GREEN}Nginx 已重启${NC}" ;;
+        3) nginx -t ;;
+        4) systemctl status nginx --no-pager ;;
+        *) systemctl reload nginx && echo -e "${GREEN}Nginx 配置已重载${NC}" ;;
+    esac
+}
+
+# PHP 管理
+php_menu() {
+    echo ""
+    echo " 1) 查看已安装版本"
+    echo " 2) 重启 PHP-FPM"
+    echo " 3) 查看 PHP 状态"
+    read -p "请选择 [1]: " choice
+
+    case "$choice" in
+        2)
+            for ver in 7.4 8.0 8.1 8.2 8.3; do
+                if systemctl is-active "php${ver}-fpm" &>/dev/null; then
+                    systemctl restart "php${ver}-fpm"
+                    echo -e "${GREEN}PHP $ver 已重启${NC}"
+                fi
+            done
+            ;;
+        3)
+            for ver in 7.4 8.0 8.1 8.2 8.3; do
+                if systemctl is-active "php${ver}-fpm" &>/dev/null; then
+                    echo -e "${GREEN}PHP $ver: 运行中${NC}"
+                fi
+            done
+            ;;
+        *)
+            site php list
+            ;;
+    esac
+}
+
+# MySQL 管理
+mysql_menu() {
+    echo ""
+    echo " 1) 查看状态"
+    echo " 2) 重启服务"
+    echo " 3) 查看数据库列表"
+    read -p "请选择 [1]: " choice
+
+    case "$choice" in
+        2) systemctl restart mysql && echo -e "${GREEN}MySQL 已重启${NC}" ;;
+        3) site db list ;;
+        *) systemctl status mysql --no-pager ;;
+    esac
+}
+
+# Redis 管理
+redis_menu() {
+    echo ""
+    echo " 1) 查看状态"
+    echo " 2) 重启服务"
+    echo " 3) 查看信息"
+    read -p "请选择 [1]: " choice
+
+    case "$choice" in
+        2) systemctl restart redis && echo -e "${GREEN}Redis 已重启${NC}" ;;
+        3) redis-cli info | head -30 ;;
+        *) systemctl status redis --no-pager ;;
+    esac
+}
+
+# 防火墙管理
+firewall_menu() {
+    echo ""
+    echo " 当前状态:"
+    ufw status numbered 2>/dev/null | head -20
+    echo ""
+    echo " 1) 开启防火墙"
+    echo " 2) 关闭防火墙"
+    echo " 3) 开放端口"
+    echo " 4) 关闭端口"
+    echo " 5) 删除规则"
+    read -p "请选择: " choice
+
+    case "$choice" in
+        1) ufw --force enable && echo -e "${GREEN}防火墙已开启${NC}" ;;
+        2) ufw disable && echo -e "${GREEN}防火墙已关闭${NC}" ;;
+        3)
+            read -p "请输入端口号: " port
+            ufw allow "$port/tcp" && echo -e "${GREEN}端口 $port 已开放${NC}"
+            ;;
+        4)
+            read -p "请输入端口号: " port
+            ufw delete allow "$port/tcp" && echo -e "${GREEN}端口 $port 规则已删除${NC}"
+            ;;
+        5)
+            read -p "请输入规则编号: " num
+            echo "y" | ufw delete "$num" && echo -e "${GREEN}规则已删除${NC}"
+            ;;
+    esac
+}
+
+# 修改 SSH 端口
+change_ssh_port() {
+    local current=$(ss -tlnp | grep sshd | awk '{print $4}' | grep -oE '[0-9]+$' | head -1)
+    current=${current:-22}
+
+    echo -e "当前 SSH 端口: ${WHITE}$current${NC}"
+    read -p "请输入新端口 (建议 10000-65535): " new_port
+
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [ "$new_port" -lt 1024 ] || [ "$new_port" -gt 65535 ]; then
+        echo -e "${RED}无效的端口号${NC}"
+        return
+    fi
+
+    # 备份配置
+    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+
+    # 修改端口
+    sed -i "s/^#*Port .*/Port $new_port/" /etc/ssh/sshd_config
+
+    # 更新防火墙
+    ufw allow "$new_port/tcp" comment "SSH"
+
+    echo -e "${YELLOW}即将重启 SSH 服务，新端口: $new_port${NC}"
+    echo -e "${RED}警告: 请确保新端口已在防火墙放行，否则将无法连接!${NC}"
+    read -p "确认重启 SSH? (y/n): " confirm
+
+    if [ "$confirm" = "y" ]; then
+        systemctl restart sshd
+        echo -e "${GREEN}SSH 端口已修改为 $new_port${NC}"
+        echo -e "请使用新端口连接: ssh -p $new_port user@host"
+    else
+        cp /etc/ssh/sshd_config.bak /etc/ssh/sshd_config
+        echo -e "${YELLOW}已取消修改${NC}"
+    fi
+}
+
+# 禁止 Ping
+toggle_ping() {
+    local current=$(cat /proc/sys/net/ipv4/icmp_echo_ignore_all)
+
+    if [ "$current" = "1" ]; then
+        echo -e "当前状态: ${RED}已禁止 Ping${NC}"
+        read -p "是否允许 Ping? (y/n): " choice
+        if [ "$choice" = "y" ]; then
+            echo 0 > /proc/sys/net/ipv4/icmp_echo_ignore_all
+            echo -e "${GREEN}已允许 Ping${NC}"
+        fi
+    else
+        echo -e "当前状态: ${GREEN}允许 Ping${NC}"
+        read -p "是否禁止 Ping? (y/n): " choice
+        if [ "$choice" = "y" ]; then
+            echo 1 > /proc/sys/net/ipv4/icmp_echo_ignore_all
+            echo -e "${GREEN}已禁止 Ping${NC}"
+        fi
+    fi
+}
+
+# 系统信息
+system_info() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 系统信息 ━━━━━━━━━━━━━━${NC}"
+    echo -e " 主机名: $(hostname)"
+    echo -e " 系统:   $(cat /etc/os-release | grep PRETTY_NAME | cut -d'"' -f2)"
+    echo -e " 内核:   $(uname -r)"
+    echo -e " 架构:   $(uname -m)"
+    echo -e " CPU:    $(grep 'model name' /proc/cpuinfo | head -1 | cut -d: -f2 | xargs)"
+    echo -e " 核心:   $(nproc) 核"
+    echo -e " 内存:   $(free -h | awk '/Mem:/{print $2}')"
+    echo -e " 运行:   $(uptime -p)"
+    echo -e " 负载:   $(cat /proc/loadavg | awk '{print $1, $2, $3}')"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 磁盘使用
+disk_usage() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 磁盘使用 ━━━━━━━━━━━━━━${NC}"
+    df -h | grep -E "^/dev|Filesystem"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 内存使用
+memory_usage() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 内存使用 ━━━━━━━━━━━━━━${NC}"
+    free -h
+    echo ""
+    echo "Top 10 内存占用进程:"
+    ps aux --sort=-%mem | head -11 | awk '{printf "%-10s %-8s %s\n", $1, $4"%", $11}'
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 网络连接
+network_info() {
+    echo ""
+    echo -e "${CYAN}━━━━━━━━━━━━━━ 网络连接 ━━━━━━━━━━━━━━${NC}"
+    echo "监听端口:"
+    ss -tlnp | head -20
+    echo ""
+    echo "连接统计:"
+    ss -s
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# 备份站点
+backup_site() {
+    echo ""
+    site list
+    echo ""
+    read -p "请输入要备份的域名: " domain
+    if [ -n "$domain" ]; then
+        site backup "$domain"
+    fi
+}
+
+# 恢复站点
+restore_site() {
+    echo ""
+    read -p "请输入域名: " domain
+    site backups "$domain"
+    echo ""
+    read -p "请输入备份文件路径: " file
+    if [ -n "$domain" ] && [ -n "$file" ]; then
+        site restore "$domain" "$file"
+    fi
+}
+
+# 备份数据库
+backup_db() {
+    echo ""
+    site db list
+    echo ""
+    read -p "请输入数据库名 (留空备份全部): " dbname
+    if [ -z "$dbname" ]; then
+        site db backup-all
+    else
+        site db export "$dbname"
+    fi
+}
+
+# 恢复数据库
+restore_db() {
+    echo ""
+    read -p "请输入数据库名: " dbname
+    read -p "请输入 SQL 文件路径: " file
+    if [ -n "$dbname" ] && [ -n "$file" ]; then
+        site db import "$dbname" "$file"
+    fi
+}
+
+# 处理命令
+handle_command() {
+    case "$1" in
+        1) start_panel ;;
+        2) stop_panel ;;
+        3) restart_panel ;;
+        4) panel_status ;;
+        5) change_port ;;
+        6) reset_password ;;
+        7) view_logs ;;
+        10) list_sites ;;
+        11) create_site ;;
+        12) delete_site ;;
+        13) ssl_request ;;
+        14) ssl_renew ;;
+        20) nginx_menu ;;
+        21) php_menu ;;
+        22) mysql_menu ;;
+        23) redis_menu ;;
+        30) firewall_menu ;;
+        31) change_ssh_port ;;
+        32) toggle_ping ;;
+        40) system_info ;;
+        41) disk_usage ;;
+        42) memory_usage ;;
+        43) network_info ;;
+        50) backup_site ;;
+        51) restore_site ;;
+        52) backup_db ;;
+        53) restore_db ;;
+        0|q|exit) exit 0 ;;
+        *) echo -e "${RED}无效选项${NC}" ;;
+    esac
+}
+
+# 主程序
+main() {
+    # 检查 root 权限
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}请使用 root 权限运行: sudo sm${NC}"
+        exit 1
+    fi
+
+    # 如果传入了参数，直接执行
+    if [ -n "$1" ]; then
+        handle_command "$1"
+        exit 0
+    fi
+
+    # 交互式菜单
+    while true; do
+        show_menu
+        read -p "请输入选项: " choice
+        handle_command "$choice"
+        echo ""
+        read -p "按回车键继续..."
+    done
+}
+
+main "$@"
