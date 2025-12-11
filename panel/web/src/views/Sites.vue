@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore, api } from '../stores/auth'
 import {
   Server, Globe, LogOut, Plus, Trash2, Power, PowerOff, ExternalLink,
-  LayoutDashboard, Loader2, FolderOpen, X, Code, FileCode, Boxes
+  LayoutDashboard, Loader2, FolderOpen, X, Code, FileCode, Boxes,
+  Search, AlertTriangle
 } from 'lucide-vue-next'
 
 const router = useRouter()
@@ -15,6 +16,14 @@ const loading = ref(true)
 const showCreateModal = ref(false)
 const createLoading = ref(false)
 const createError = ref('')
+
+// 搜索
+const searchQuery = ref('')
+
+// 删除确认 Modal
+const showDeleteModal = ref(false)
+const deleteTarget = ref('')
+const deleteLoading = ref(false)
 
 const newSite = ref({
   domain: '',
@@ -31,6 +40,17 @@ const siteTypes = [
   { value: 'python', label: 'Python', icon: Code, color: 'text-yellow-400' },
   { value: 'proxy', label: 'Proxy', icon: Globe, color: 'text-orange-400' }
 ]
+
+// 过滤后的站点列表
+const filteredSites = computed(() => {
+  if (!searchQuery.value.trim()) return sites.value
+  const q = searchQuery.value.toLowerCase()
+  return sites.value.filter(site =>
+    site.domain.toLowerCase().includes(q) ||
+    site.type.toLowerCase().includes(q) ||
+    site.path?.toLowerCase().includes(q)
+  )
+})
 
 async function fetchSites() {
   try {
@@ -78,14 +98,22 @@ async function createSite() {
   }
 }
 
-async function deleteSite(domain: string) {
-  if (!confirm(`Delete site ${domain}? This cannot be undone!`)) return
+function confirmDelete(domain: string) {
+  deleteTarget.value = domain
+  showDeleteModal.value = true
+}
 
+async function deleteSite() {
+  deleteLoading.value = true
   try {
-    await api.delete(`/sites/${domain}`)
+    await api.delete(`/sites/${deleteTarget.value}`)
+    showDeleteModal.value = false
+    deleteTarget.value = ''
     await fetchSites()
   } catch (e) {
     console.error('Failed to delete site:', e)
+  } finally {
+    deleteLoading.value = false
   }
 }
 
@@ -157,16 +185,28 @@ onMounted(fetchSites)
 
     <!-- Main -->
     <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <!-- Title -->
-      <div class="flex items-center justify-between mb-8">
+      <!-- Title & Actions -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
           <h1 class="text-2xl font-bold text-white">Sites</h1>
           <p class="text-slate-400 mt-1">Manage your websites and applications</p>
         </div>
-        <button @click="showCreateModal = true" class="btn btn-primary">
-          <Plus class="w-4 h-4" />
-          <span>Create Site</span>
-        </button>
+        <div class="flex items-center gap-3">
+          <!-- Search -->
+          <div class="relative">
+            <Search class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+            <input
+              v-model="searchQuery"
+              type="text"
+              placeholder="Search sites..."
+              class="w-48 sm:w-64 pl-9 pr-4 py-2 bg-slate-800/50 border border-slate-700 rounded-lg text-white text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
+            />
+          </div>
+          <button @click="showCreateModal = true" class="btn btn-primary">
+            <Plus class="w-4 h-4" />
+            <span class="hidden sm:inline">Create Site</span>
+          </button>
+        </div>
       </div>
 
       <!-- Loading -->
@@ -187,10 +227,19 @@ onMounted(fetchSites)
         </button>
       </div>
 
+      <!-- No Results -->
+      <div v-else-if="filteredSites.length === 0" class="card p-12 text-center">
+        <div class="w-16 h-16 mx-auto mb-4 rounded-full bg-slate-800 flex items-center justify-center">
+          <Search class="w-8 h-8 text-slate-600" />
+        </div>
+        <h3 class="text-lg font-medium text-white mb-2">No results found</h3>
+        <p class="text-slate-400">No sites match "{{ searchQuery }}"</p>
+      </div>
+
       <!-- Sites Grid -->
       <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <div
-          v-for="site in sites"
+          v-for="site in filteredSites"
           :key="site.domain"
           class="card p-5 card-hover group"
         >
@@ -212,8 +261,8 @@ onMounted(fetchSites)
             </span>
           </div>
 
-          <div class="flex items-center gap-2 text-xs text-slate-500 mb-4">
-            <FolderOpen class="w-3.5 h-3.5" />
+          <div class="flex items-center gap-2 text-xs text-slate-500 mb-4" :title="site.path">
+            <FolderOpen class="w-3.5 h-3.5 flex-shrink-0" />
             <span class="truncate">{{ site.path }}</span>
           </div>
 
@@ -228,13 +277,18 @@ onMounted(fetchSites)
               <span>{{ site.status === 'enabled' ? 'Disable' : 'Enable' }}</span>
             </button>
             <button
-              @click="deleteSite(site.domain)"
+              @click="confirmDelete(site.domain)"
               class="btn btn-ghost py-1.5 px-3 text-red-400 hover:text-red-300 hover:bg-red-500/10"
             >
               <Trash2 class="w-3.5 h-3.5" />
             </button>
           </div>
         </div>
+      </div>
+
+      <!-- Site Count -->
+      <div v-if="!loading && sites.length > 0" class="mt-6 text-center text-sm text-slate-500">
+        Showing {{ filteredSites.length }} of {{ sites.length }} sites
       </div>
     </main>
 
@@ -335,6 +389,35 @@ onMounted(fetchSites)
               </button>
             </div>
           </form>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Delete Confirmation Modal -->
+    <Teleport to="body">
+      <div v-if="showDeleteModal" class="fixed inset-0 z-50 flex items-center justify-center p-4">
+        <div class="absolute inset-0 bg-black/60 backdrop-blur-sm" @click="showDeleteModal = false"></div>
+        <div class="relative card w-full max-w-md animate-fadeIn">
+          <div class="p-6 text-center">
+            <div class="w-14 h-14 mx-auto mb-4 rounded-full bg-red-500/20 flex items-center justify-center">
+              <AlertTriangle class="w-7 h-7 text-red-400" />
+            </div>
+            <h3 class="text-lg font-semibold text-white mb-2">Delete Site</h3>
+            <p class="text-slate-400 mb-2">Are you sure you want to delete</p>
+            <p class="text-white font-mono mb-4">{{ deleteTarget }}</p>
+            <p class="text-sm text-red-400 mb-6">This action cannot be undone!</p>
+
+            <div class="flex justify-center gap-3">
+              <button @click="showDeleteModal = false" class="btn btn-ghost px-6">
+                Cancel
+              </button>
+              <button @click="deleteSite" :disabled="deleteLoading" class="btn btn-danger px-6">
+                <Loader2 v-if="deleteLoading" class="w-4 h-4 animate-spin" />
+                <Trash2 v-else class="w-4 h-4" />
+                <span>{{ deleteLoading ? 'Deleting...' : 'Delete' }}</span>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </Teleport>

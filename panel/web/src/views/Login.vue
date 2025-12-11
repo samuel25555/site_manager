@@ -52,12 +52,12 @@ async function handleLogin() {
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-2">Username</label>
             <div class="relative">
-              <User class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+              <User class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
               <input
                 v-model="username"
                 type="text"
                 required
-                class="input pl-11"
+                class="w-full px-4 py-2.5 pl-10 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                 placeholder="Enter your username"
                 autocomplete="username"
               />
@@ -68,12 +68,12 @@ async function handleLogin() {
           <div>
             <label class="block text-sm font-medium text-slate-300 mb-2">Password</label>
             <div class="relative">
-              <Lock class="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+              <Lock class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
               <input
                 v-model="password"
                 type="password"
                 required
-                class="input pl-11"
+                class="w-full px-4 py-2.5 pl-10 bg-slate-900/50 border border-slate-700 rounded-lg text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all"
                 placeholder="Enter your password"
                 autocomplete="current-password"
               />
