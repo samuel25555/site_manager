@@ -31,6 +31,9 @@ func main() {
 	// 加载配置
 	cfg := config.Load()
 
+	// 从配置初始化 JWT 密钥
+	auth.SetJWTSecret(cfg.JWTSecret)
+
 	// 初始化数据库
 	if err := models.InitDB(cfg.DataDir); err != nil {
 		log.Fatalf("Failed to init database: %v", err)
@@ -43,9 +46,19 @@ func main() {
 
 	// 中间件
 	app.Use(logger.New())
+
+	// CORS 配置 - 生产环境应限制来源
+	allowedOrigins := os.Getenv("CORS_ORIGINS")
+	if allowedOrigins == "" {
+		// 默认允许所有来源 (开发模式)
+		// 生产环境应设置 CORS_ORIGINS 环境变量，如: CORS_ORIGINS="https://example.com,https://admin.example.com"
+		allowedOrigins = "*"
+	}
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*",
-		AllowHeaders: "Origin, Content-Type, Accept, Authorization",
+		AllowOrigins:     allowedOrigins,
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowMethods:     "GET, POST, PUT, DELETE, OPTIONS",
+		AllowCredentials: allowedOrigins != "*", // 通配符模式不能开启 credentials
 	}))
 
 	// API 路由
@@ -97,6 +110,12 @@ func main() {
 		log.Printf("\n==================================")
 		log.Printf("Initial admin password: %s", pwd)
 		log.Printf("==================================\n")
+	}
+
+	// JWT 密钥警告
+	if os.Getenv("JWT_SECRET") == "" {
+		log.Printf("[WARN] JWT_SECRET environment variable not set!")
+		log.Printf("[WARN] Using config default or random secret. Set JWT_SECRET for production.")
 	}
 
 	if err := app.Listen(addr); err != nil {

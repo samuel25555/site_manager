@@ -4,7 +4,9 @@
 # https://github.com/samuel25555/site_manager
 #
 
-#set -e
+# 错误处理: 使用 trap 而不是 set -e
+trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
+trap 'if [ $? -ne 0 ]; then log_error "命令失败: $last_command"; fi' ERR
 
 VERSION="1.0.0"
 
@@ -53,43 +55,43 @@ usage() {
     echo "  status [domain]           站点状态"
     echo ""
     echo "SSL 证书:"
-    echo "  ssl <domain>              申请 SSL 证书"
+    echo "  ssl <domain> [--dns]      申请证书 (可选 DNS 验证)"
     echo "  ssl renew                 续期所有证书"
     echo ""
-    echo "日志:"
+    echo "日志与备份:"
     echo "  logs <domain> [-f] [-e]   查看日志 (-f 实时, -e 错误)"
-    echo ""
-    echo "备份:"
     echo "  backup <domain>           备份站点"
-    echo "  restore <domain> <file>   恢复备份"
+    echo "  restore <domain> <file>   恢复站点"
     echo "  backups [domain]          列出备份"
     echo ""
     echo "数据库:"
     echo "  db create <name>          创建数据库"
     echo "  db drop <name>            删除数据库"
-    echo "  db import <name> <file>   导入数据库"
-    echo "  db export <name>          导出数据库"
+    echo "  db import <name> [file]   导入数据"
+    echo "  db export <name>          导出数据"
     echo "  db list                   列出数据库"
     echo "  db backup-all             备份所有数据库"
+    echo "  db cron <hourly|daily|weekly|off>  定时备份"
     echo "  db backups [name]         列出数据库备份"
-    echo "  db cron <hourly|daily|off> 设置自动备份"
     echo ""
-    echo "PHP:"
+    echo "PHP 管理:"
     echo "  php list                  列出 PHP 版本"
-    echo "  php set <domain> <ver>    设置站点 PHP 版本"
+    echo "  php set <domain> <ver>    设置 PHP 版本"
     echo ""
-    echo "代理:"
-    echo "  proxy <domain> target <url>   设置代理目标"
+    echo "反向代理:"
+    echo "  proxy <domain> set-target <url>         设置目标"
+    echo "  proxy <domain> add-upstream <server>    添加上游"
+    echo "  proxy <domain> remove-upstream <server> 删除上游"
+    echo ""
+    echo "服务管理:"
+    echo "  nginx <test|reload|restart>  Nginx 管理"
+    echo "  supervisor <reload|restart>  Supervisor 管理"
+    echo "  restart                      重启所有服务"
     echo ""
     echo "Docker:"
     echo "  docker up <domain>        启动容器"
     echo "  docker down <domain>      停止容器"
     echo "  docker logs <domain>      查看日志"
-    echo ""
-    echo "服务:"
-    echo "  nginx reload|restart|test Nginx 操作"
-    echo "  supervisor reload         Supervisor 操作"
-    echo "  restart                   重启所有服务"
     echo ""
     echo "Web 面板:"
     echo "  panel start [--port=8888] 启动面板"
@@ -99,30 +101,58 @@ usage() {
     echo ""
 }
 
+# 需要 root 权限的命令列表
+needs_root() {
+    local cmd="$1"
+    case "$cmd" in
+        create|delete|enable|disable|ssl|backup|restore|db|nginx|supervisor|restart|docker|panel)
+            return 0  # 需要 root
+            ;;
+        *)
+            return 1  # 不需要 root
+            ;;
+    esac
+}
+
 # 主入口
-case "$1" in
+main_cmd="$1"
+
+# 检查 root 权限（对于需要的命令）
+if needs_root "$main_cmd" && [ "$EUID" -ne 0 ]; then
+    log_error "此命令需要 root 权限，请使用 sudo $0 $@"
+    exit 1
+fi
+
+case "$main_cmd" in
     create)
+        [ -z "$2" ] && { log_error "缺少域名参数"; usage; exit 1; }
+        [ -z "$3" ] && { log_error "缺少类型参数"; usage; exit 1; }
         site_create "$2" "$3" "${@:4}"
         ;;
     delete)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         site_delete "$2"
         ;;
     enable)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         site_enable "$2"
         ;;
     disable)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         site_disable "$2"
         ;;
     list)
         site_list
         ;;
     info)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         site_info "$2"
         ;;
     status)
         site_status "$2"
         ;;
     ssl)
+        [ -z "$2" ] && { log_error "缺少域名参数 (或使用 'ssl renew')"; exit 1; }
         if [ "$2" = "renew" ]; then
             ssl_renew
         else
@@ -130,12 +160,16 @@ case "$1" in
         fi
         ;;
     logs)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         logs_view "$2" "${@:3}"
         ;;
     backup)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         backup_create "$2"
         ;;
     restore)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
+        [ -z "$3" ] && { log_error "缺少备份文件参数"; exit 1; }
         backup_restore "$2" "$3"
         ;;
     backups)
@@ -143,33 +177,79 @@ case "$1" in
         ;;
     db)
         case "$2" in
-            create) db_create "$3" ;;
-            backup-all) db_backup_all ;;
-            cron) db_cron_setup "$3" ;;
-            backups) db_backups "$3" ;;
-            drop) db_drop "$3" ;;
-            import) db_import "$3" "$4" ;;
-            export) db_export "$3" ;;
-            list) db_list ;;
-            *) echo "Usage: site db <create|drop|import|export|list|backup-all|backups|cron>" ;;
+            create)
+                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
+                db_create "$3"
+                ;;
+            backup-all)
+                db_backup_all
+                ;;
+            cron)
+                db_cron_setup "$3"
+                ;;
+            backups)
+                db_backups "$3"
+                ;;
+            drop)
+                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
+                db_drop "$3"
+                ;;
+            import)
+                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
+                db_import "$3" "$4"
+                ;;
+            export)
+                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
+                db_export "$3"
+                ;;
+            list)
+                db_list
+                ;;
+            *)
+                echo "Usage: site db <create|drop|import|export|list|backup-all|backups|cron> [args]"
+                exit 1
+                ;;
         esac
         ;;
     php)
         case "$2" in
-            list) php_list ;;
-            set) php_set "$3" "$4" ;;
-            *) echo "Usage: site php <list|set>" ;;
+            list)
+                php_list
+                ;;
+            set)
+                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
+                [ -z "$4" ] && { log_error "缺少 PHP 版本参数"; exit 1; }
+                php_set "$3" "$4"
+                ;;
+            *)
+                echo "Usage: site php <list|set <domain> <version>>"
+                exit 1
+                ;;
         esac
         ;;
     proxy)
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
+        [ -z "$3" ] && { log_error "缺少操作参数"; exit 1; }
         proxy_manage "$2" "$3" "$4"
         ;;
     docker)
         case "$2" in
-            up) docker_up "$3" ;;
-            down) docker_down "$3" ;;
-            logs) docker_logs "$3" ;;
-            *) echo "Usage: site docker <up|down|logs>" ;;
+            up)
+                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
+                docker_up "$3"
+                ;;
+            down)
+                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
+                docker_down "$3"
+                ;;
+            logs)
+                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
+                docker_logs "$3"
+                ;;
+            *)
+                echo "Usage: site docker <up|down|logs> <domain>"
+                exit 1
+                ;;
         esac
         ;;
     nginx)
@@ -187,7 +267,12 @@ case "$1" in
     -v|--version)
         echo "Site Manager v$VERSION"
         ;;
-    *)
+    -h|--help|"")
         usage
+        ;;
+    *)
+        log_error "未知命令: $main_cmd"
+        usage
+        exit 1
         ;;
 esac

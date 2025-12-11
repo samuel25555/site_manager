@@ -1,6 +1,9 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"os"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -9,7 +12,32 @@ import (
 	"site_manager_panel/internal/models"
 )
 
-var jwtSecret = []byte("site_manager_panel_secret_key_change_me")
+var jwtSecret []byte
+
+func init() {
+	// 优先从环境变量读取
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		// 如果没有设置，生成随机密钥（每次重启会变化，强制用户设置）
+		randomBytes := make([]byte, 32)
+		if _, err := rand.Read(randomBytes); err != nil {
+			// 最后的后备方案
+			secret = "fallback_secret_please_set_JWT_SECRET_env"
+		} else {
+			secret = hex.EncodeToString(randomBytes)
+		}
+		// 警告日志
+		println("[WARN] JWT_SECRET not set, using random secret. Tokens will be invalidated on restart!")
+	}
+	jwtSecret = []byte(secret)
+}
+
+// SetJWTSecret 允许从配置中设置密钥
+func SetJWTSecret(secret string) {
+	if secret != "" {
+		jwtSecret = []byte(secret)
+	}
+}
 
 type LoginRequest struct {
 	Username string `json:"username"`
@@ -81,7 +109,7 @@ func Login(c *fiber.Ctx) error {
 
 func Me(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(int64)
-	
+
 	user, err := models.GetUserByID(userID)
 	if err != nil || user == nil {
 		return c.Status(401).JSON(fiber.Map{
