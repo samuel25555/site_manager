@@ -26,6 +26,24 @@ const router = createRouter({
       name: "site-detail",
       component: () => import("../views/SiteDetail.vue"),
       meta: { requiresAuth: true }
+    },
+    {
+      path: "/files",
+      name: "files",
+      component: () => import("../views/Files.vue"),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: "/terminal",
+      name: "terminal",
+      component: () => import("../views/Terminal.vue"),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: "/firewall",
+      name: "firewall",
+      component: () => import("../views/Firewall.vue"),
+      meta: { requiresAuth: true }
     }
   ]
 })

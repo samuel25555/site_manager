@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import Layout from "../components/Layout.vue"
 import { useRouter } from 'vue-router'
 import { useAuthStore, api } from '../stores/auth'
 import {
-  Server, Globe, LogOut, Plus, Trash2, Power, PowerOff, ExternalLink,
-  LayoutDashboard, Loader2, FolderOpen, X, Code, FileCode, Boxes,
+  Globe, Plus, Trash2, Power, PowerOff, ExternalLink,
+  Loader2, FolderOpen, X, Code, FileCode, Boxes,
   Search, AlertTriangle
 } from 'lucide-vue-next'
 
@@ -137,54 +138,19 @@ function getTypeColor(type: string) {
   return t?.color || 'text-slate-400'
 }
 
-function handleLogout() {
-  authStore.logout()
-  router.push('/login')
-}
+// Keep authStore for potential future use
+void authStore
+void router
 
 onMounted(fetchSites)
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-900">
-    <!-- Header -->
-    <header class="sticky top-0 z-50 bg-slate-900/80 backdrop-blur-xl border-b border-slate-800">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex items-center justify-between h-16">
-          <!-- Logo -->
-          <div class="flex items-center gap-3">
-            <div class="w-9 h-9 rounded-lg bg-gradient-primary flex items-center justify-center">
-              <Server class="w-5 h-5 text-white" />
-            </div>
-            <span class="text-lg font-semibold text-white">Site Manager</span>
-          </div>
-
-          <!-- Nav -->
-          <nav class="flex items-center gap-1">
-            <router-link to="/" class="nav-item">
-              <LayoutDashboard class="w-4 h-4" />
-              <span>Dashboard</span>
-            </router-link>
-            <router-link to="/sites" class="nav-item nav-item-active">
-              <Globe class="w-4 h-4" />
-              <span>Sites</span>
-            </router-link>
-          </nav>
-
-          <!-- User -->
-          <div class="flex items-center gap-4">
-            <span class="text-sm text-slate-400">{{ authStore.user?.username }}</span>
-            <button @click="handleLogout" class="btn btn-ghost py-1.5 px-3">
-              <LogOut class="w-4 h-4" />
-              <span>Logout</span>
-            </button>
-          </div>
-        </div>
-      </div>
-    </header>
+  <Layout>
+  <div>
 
     <!-- Main -->
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="p-6">
       <!-- Title & Actions -->
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
@@ -422,4 +388,5 @@ onMounted(fetchSites)
       </div>
     </Teleport>
   </div>
+  </Layout>
 </template>

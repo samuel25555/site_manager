@@ -8,7 +8,7 @@
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
 trap 'if [ $? -ne 0 ]; then log_error "命令失败: $last_command"; fi' ERR
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # 解析真实路径 (处理符号链接)
 SOURCE="${BASH_SOURCE[0]}"
@@ -35,9 +35,26 @@ source "$LIB_DIR/php.sh"
 source "$LIB_DIR/proxy.sh"
 source "$LIB_DIR/docker.sh"
 source "$LIB_DIR/panel.sh"
+source "$LIB_DIR/software.sh"
+source "$LIB_DIR/firewall.sh"
 
 # 加载配置
 source "$CONFIG_DIR/site_manager.conf"
+
+#---------------------------------------
+# 需要 root 权限的命令
+#---------------------------------------
+needs_root() {
+    local cmd="$1"
+    case "$cmd" in
+        create|delete|enable|disable|ssl|backup|restore|db|php|nginx|supervisor|restart|panel|install|uninstall|firewall)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 usage() {
     echo ""
@@ -45,7 +62,22 @@ usage() {
     echo ""
     echo "Usage: site <command> [options]"
     echo ""
-    echo "站点管理:"
+    echo -e "${CYAN}软件管理:${NC}"
+    echo "  install <software> [ver]  安装软件 (nginx|php|mysql|redis...)"
+    echo "  uninstall <software>      卸载软件"
+    echo "  software list             列出已安装软件"
+    echo "  software available        列出可安装软件"
+    echo ""
+    echo -e "${CYAN}防火墙:${NC}"
+    echo "  firewall status           防火墙状态"
+    echo "  firewall on|off           开启/关闭防火墙"
+    echo "  firewall allow <port>     开放端口"
+    echo "  firewall deny <port>      关闭端口"
+    echo "  firewall allow-ip <IP>    允许 IP"
+    echo "  firewall deny-ip <IP>     禁止 IP"
+    echo "  firewall preset <name>    快捷端口组 (web/ssh/mysql/redis)"
+    echo ""
+    echo -e "${CYAN}站点管理:${NC}"
     echo "  create <domain> <type>    创建站点 (php|php:8.1|static|node|python|docker|proxy)"
     echo "  delete <domain>           删除站点"
     echo "  enable <domain>           启用站点"
@@ -54,17 +86,17 @@ usage() {
     echo "  info <domain>             站点详情"
     echo "  status [domain]           站点状态"
     echo ""
-    echo "SSL 证书:"
+    echo -e "${CYAN}SSL 证书:${NC}"
     echo "  ssl <domain> [--dns]      申请证书 (可选 DNS 验证)"
     echo "  ssl renew                 续期所有证书"
     echo ""
-    echo "日志与备份:"
+    echo -e "${CYAN}日志与备份:${NC}"
     echo "  logs <domain> [-f] [-e]   查看日志 (-f 实时, -e 错误)"
     echo "  backup <domain>           备份站点"
     echo "  restore <domain> <file>   恢复站点"
     echo "  backups [domain]          列出备份"
     echo ""
-    echo "数据库:"
+    echo -e "${CYAN}数据库:${NC}"
     echo "  db create <name>          创建数据库"
     echo "  db drop <name>            删除数据库"
     echo "  db import <name> [file]   导入数据"
@@ -74,26 +106,26 @@ usage() {
     echo "  db cron <hourly|daily|weekly|off>  定时备份"
     echo "  db backups [name]         列出数据库备份"
     echo ""
-    echo "PHP 管理:"
+    echo -e "${CYAN}PHP 管理:${NC}"
     echo "  php list                  列出 PHP 版本"
     echo "  php set <domain> <ver>    设置 PHP 版本"
     echo ""
-    echo "反向代理:"
+    echo -e "${CYAN}反向代理:${NC}"
     echo "  proxy <domain> set-target <url>         设置目标"
     echo "  proxy <domain> add-upstream <server>    添加上游"
     echo "  proxy <domain> remove-upstream <server> 删除上游"
     echo ""
-    echo "服务管理:"
+    echo -e "${CYAN}服务管理:${NC}"
     echo "  nginx <test|reload|restart>  Nginx 管理"
     echo "  supervisor <reload|restart>  Supervisor 管理"
     echo "  restart                      重启所有服务"
     echo ""
-    echo "Docker:"
+    echo -e "${CYAN}Docker:${NC}"
     echo "  docker up <domain>        启动容器"
     echo "  docker down <domain>      停止容器"
     echo "  docker logs <domain>      查看日志"
     echo ""
-    echo "Web 面板:"
+    echo -e "${CYAN}Web 面板:${NC}"
     echo "  panel start [--port=8888] 启动面板"
     echo "  panel stop                停止面板"
     echo "  panel status              面板状态"
@@ -101,32 +133,42 @@ usage() {
     echo ""
 }
 
-# 需要 root 权限的命令列表
-needs_root() {
-    local cmd="$1"
-    case "$cmd" in
-        create|delete|enable|disable|ssl|backup|restore|db|nginx|supervisor|restart|docker|panel)
-            return 0  # 需要 root
-            ;;
-        *)
-            return 1  # 不需要 root
-            ;;
-    esac
-}
-
+#---------------------------------------
 # 主入口
+#---------------------------------------
 main_cmd="$1"
 
-# 检查 root 权限（对于需要的命令）
+# 检查 root 权限
 if needs_root "$main_cmd" && [ "$EUID" -ne 0 ]; then
-    log_error "此命令需要 root 权限，请使用 sudo $0 $@"
+    log_error "此命令需要 root 权限，请使用 sudo site $main_cmd"
     exit 1
 fi
 
 case "$main_cmd" in
+    # 软件管理
+    install)
+        shift
+        software_main install "$@"
+        ;;
+    uninstall)
+        shift
+        software_main uninstall "$@"
+        ;;
+    software)
+        shift
+        software_main "$@"
+        ;;
+
+    # 防火墙
+    firewall|fw)
+        shift
+        firewall_main "$@"
+        ;;
+
+    # 站点管理
     create)
-        [ -z "$2" ] && { log_error "缺少域名参数"; usage; exit 1; }
-        [ -z "$3" ] && { log_error "缺少类型参数"; usage; exit 1; }
+        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
+        [ -z "$3" ] && { log_error "缺少类型参数 (php|static|node|python|docker|proxy)"; exit 1; }
         site_create "$2" "$3" "${@:4}"
         ;;
     delete)
@@ -141,7 +183,7 @@ case "$main_cmd" in
         [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         site_disable "$2"
         ;;
-    list)
+    list|ls)
         site_list
         ;;
     info)
@@ -151,14 +193,19 @@ case "$main_cmd" in
     status)
         site_status "$2"
         ;;
+
+    # SSL
     ssl)
-        [ -z "$2" ] && { log_error "缺少域名参数 (或使用 'ssl renew')"; exit 1; }
-        if [ "$2" = "renew" ]; then
+        shift
+        if [ "$1" == "renew" ]; then
             ssl_renew
         else
-            ssl_request "$2" "${@:3}"
+            [ -z "$1" ] && { log_error "缺少域名参数"; exit 1; }
+            ssl_request "$@"
         fi
         ;;
+
+    # 日志与备份
     logs)
         [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         logs_view "$2" "${@:3}"
@@ -175,6 +222,8 @@ case "$main_cmd" in
     backups)
         backup_list "$2"
         ;;
+
+    # 数据库
     db)
         case "$2" in
             create)
@@ -211,6 +260,8 @@ case "$main_cmd" in
                 ;;
         esac
         ;;
+
+    # PHP
     php)
         case "$2" in
             list)
@@ -227,11 +278,15 @@ case "$main_cmd" in
                 ;;
         esac
         ;;
+
+    # 反向代理
     proxy)
         [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
         [ -z "$3" ] && { log_error "缺少操作参数"; exit 1; }
         proxy_manage "$2" "$3" "$4"
         ;;
+
+    # Docker
     docker)
         case "$2" in
             up)
@@ -252,6 +307,8 @@ case "$main_cmd" in
                 ;;
         esac
         ;;
+
+    # 服务管理
     nginx)
         nginx_manage "$2"
         ;;
@@ -261,9 +318,13 @@ case "$main_cmd" in
     restart)
         services_restart
         ;;
+
+    # 面板
     panel)
         panel_manage "$2" "${@:3}"
         ;;
+
+    # 版本和帮助
     -v|--version)
         echo "Site Manager v$VERSION"
         ;;
@@ -272,7 +333,8 @@ case "$main_cmd" in
         ;;
     *)
         log_error "未知命令: $main_cmd"
-        usage
+        echo ""
+        echo "使用 'site --help' 查看帮助"
         exit 1
         ;;
 esac
