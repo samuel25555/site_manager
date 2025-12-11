@@ -1,96 +1,239 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, nextTick } from "vue"
+import { ref, onMounted, onUnmounted, nextTick, watch } from "vue"
+import { useRoute } from "vue-router"
 import { Terminal } from "@xterm/xterm"
 import { FitAddon } from "@xterm/addon-fit"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import Layout from "../components/Layout.vue"
+import { Plus, X, SplitSquareHorizontal } from "lucide-vue-next"
 import "@xterm/xterm/css/xterm.css"
 
-const terminalRef = ref<HTMLDivElement | null>(null)
-const connected = ref(false)
-const status = ref("准备连接...")
+interface TerminalPanel {
+  id: number
+  cwd: string
+  terminal: Terminal | null
+  fitAddon: FitAddon | null
+  ws: WebSocket | null
+  connected: boolean
+  initialCdDone: boolean
+  heartbeatTimer: number | null
+  reconnectAttempts: number
+}
 
-let terminal: Terminal | null = null
-let fitAddon: FitAddon | null = null
-let ws: WebSocket | null = null
-let reconnectTimer: number | null = null
+interface TerminalTab {
+  id: number
+  name: string
+  panels: TerminalPanel[]
+}
 
-function connect() {
-  if (ws?.readyState === WebSocket.OPEN) return
+const route = useRoute()
+const tabs = ref<TerminalTab[]>([])
+const activeTabId = ref<number>(0)
+const activePanelId = ref<number>(0)
+let idCounter = 0
 
-  status.value = "连接中..."
+// 心跳配置
+const HEARTBEAT_INTERVAL = 30000  // 30秒发送一次心跳
+const MAX_RECONNECT_ATTEMPTS = 3  // 最大重连次数
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
-  const token = localStorage.getItem("token")
-  ws = new WebSocket(protocol + "//" + window.location.host + "/ws/terminal?token=" + token)
+function getInitialCwd(): string {
+  return (route.query.cwd as string) || ""
+}
 
-  ws.binaryType = "arraybuffer"
+function createPanel(cwd: string = ""): TerminalPanel {
+  return {
+    id: ++idCounter,
+    cwd: cwd || getInitialCwd(),
+    terminal: null,
+    fitAddon: null,
+    ws: null,
+    connected: false,
+    initialCdDone: false,
+    heartbeatTimer: null,
+    reconnectAttempts: 0
+  }
+}
 
-  ws.onopen = () => {
-    connected.value = true
-    status.value = "已连接"
-    terminal?.focus()
-    sendResize()
+function createTab(cwd: string = "") {
+  const panel = createPanel(cwd)
+  const tab: TerminalTab = {
+    id: ++idCounter,
+    name: `终端 ${tabs.value.length + 1}`,
+    panels: [panel]
+  }
+  tabs.value.push(tab)
+  activeTabId.value = tab.id
+  activePanelId.value = panel.id
+
+  nextTick(() => {
+    initPanel(panel)
+    connectPanel(panel)
+  })
+}
+
+async function splitTerminal() {
+  const tab = tabs.value.find(t => t.id === activeTabId.value)
+  if (!tab) return
+
+  const currentPanel = tab.panels.find(p => p.id === activePanelId.value)
+
+  let cwd = ""
+  if (currentPanel && currentPanel.connected) {
+    cwd = await getCwdFromPanel(currentPanel)
   }
 
-  ws.onmessage = (event) => {
-    if (event.data instanceof ArrayBuffer) {
-      terminal?.write(new Uint8Array(event.data))
-    } else {
-      terminal?.write(event.data)
+  const panel = createPanel("")
+  if (cwd) {
+    panel.cwd = cwd
+  }
+
+  tab.panels.push(panel)
+  activePanelId.value = panel.id
+
+  nextTick(() => {
+    initPanel(panel)
+    connectPanel(panel, cwd)
+    tab.panels.forEach(p => {
+      p.fitAddon?.fit()
+      sendResize(p)
+    })
+  })
+}
+
+function getCwdFromPanel(panel: TerminalPanel): Promise<string> {
+  return new Promise((resolve) => {
+    if (!panel.ws || panel.ws.readyState !== WebSocket.OPEN) {
+      resolve("")
+      return
     }
-  }
 
-  ws.onclose = () => {
-    connected.value = false
-    status.value = "连接已断开"
-    terminal?.write("\r\n\x1b[31m[连接已断开，5秒后重连...]\x1b[0m\r\n")
-    scheduleReconnect()
-  }
+    const marker = `__CWD_${Date.now()}__`
+    const cmd = `echo "${marker}$(pwd)${marker}"\r`
 
-  ws.onerror = () => {
-    status.value = "连接错误"
-  }
-}
+    let output = ""
+    let timeoutId: ReturnType<typeof setTimeout>
 
-function scheduleReconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer)
-  reconnectTimer = window.setTimeout(() => {
-    if (!connected.value) {
-      connect()
+    const originalOnmessage = panel.ws.onmessage
+
+    panel.ws.onmessage = (event) => {
+      if (originalOnmessage) {
+        originalOnmessage.call(panel.ws!, event)
+      }
+
+      let data = ""
+      if (event.data instanceof ArrayBuffer) {
+        data = new TextDecoder().decode(event.data)
+      } else {
+        data = event.data
+      }
+      output += data
+
+      const startIdx = output.indexOf(marker)
+      if (startIdx !== -1) {
+        const endIdx = output.indexOf(marker, startIdx + marker.length)
+        if (endIdx !== -1) {
+          const cwd = output.substring(startIdx + marker.length, endIdx).trim()
+          clearTimeout(timeoutId)
+          panel.ws!.onmessage = originalOnmessage
+          resolve(cwd)
+        }
+      }
     }
-  }, 5000)
+
+    timeoutId = setTimeout(() => {
+      if (panel.ws) {
+        panel.ws.onmessage = originalOnmessage
+      }
+      resolve("")
+    }, 1000)
+
+    panel.ws.send(new TextEncoder().encode(cmd))
+  })
 }
 
-function disconnect() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
+function closePanel(tabId: number, panelId: number) {
+  const tab = tabs.value.find(t => t.id === tabId)
+  if (!tab) return
+
+  const index = tab.panels.findIndex(p => p.id === panelId)
+  if (index === -1) return
+
+  const panel = tab.panels[index]
+  if (panel) {
+    stopHeartbeat(panel)
+    disconnectPanel(panel)
+    panel.terminal?.dispose()
   }
-  ws?.close()
-  ws = null
-  connected.value = false
-  status.value = "已断开"
+
+  tab.panels.splice(index, 1)
+
+  if (tab.panels.length === 0) {
+    closeTab(tabId)
+  } else {
+    if (activePanelId.value === panelId) {
+      const newIndex = Math.max(0, index - 1)
+      activePanelId.value = tab.panels[newIndex]?.id || 0
+    }
+    nextTick(() => {
+      tab.panels.forEach(p => {
+        p.fitAddon?.fit()
+        sendResize(p)
+      })
+    })
+  }
 }
 
-function sendResize() {
-  if (!ws || ws.readyState !== WebSocket.OPEN || !terminal) return
+function closeTab(tabId: number) {
+  const index = tabs.value.findIndex(t => t.id === tabId)
+  if (index === -1) return
 
-  const cols = terminal.cols
-  const rows = terminal.rows
+  const tab = tabs.value[index]
+  if (tab) {
+    tab.panels.forEach(panel => {
+      stopHeartbeat(panel)
+      disconnectPanel(panel)
+      panel.terminal?.dispose()
+    })
+  }
 
-  const resizeCmd = new Uint8Array([
-    1,
-    (cols >> 8) & 0xff, cols & 0xff,
-    (rows >> 8) & 0xff, rows & 0xff
-  ])
-  ws.send(resizeCmd)
+  tabs.value.splice(index, 1)
+
+  if (tabs.value.length === 0) {
+    createTab()
+  } else if (activeTabId.value === tabId) {
+    const newIndex = Math.max(0, index - 1)
+    activeTabId.value = tabs.value[newIndex]?.id || 0
+    const newTab = tabs.value.find(t => t.id === activeTabId.value)
+    activePanelId.value = newTab?.panels[0]?.id || 0
+  }
 }
 
-function initTerminal() {
-  if (!terminalRef.value) return
+function switchTab(tabId: number) {
+  activeTabId.value = tabId
+  const tab = tabs.value.find(t => t.id === tabId)
+  if (tab && tab.panels.length > 0) {
+    activePanelId.value = tab.panels[0]?.id || 0
+  }
+  nextTick(() => {
+    tab?.panels.forEach(p => {
+      p.fitAddon?.fit()
+      sendResize(p)
+    })
+  })
+}
 
-  terminal = new Terminal({
+function activatePanel(panelId: number) {
+  activePanelId.value = panelId
+  const tab = tabs.value.find(t => t.id === activeTabId.value)
+  const panel = tab?.panels.find(p => p.id === panelId)
+  panel?.terminal?.focus()
+}
+
+function initPanel(panel: TerminalPanel) {
+  const container = document.getElementById(`panel-term-${panel.id}`)
+  if (!container) return
+
+  panel.terminal = new Terminal({
     cursorBlink: true,
     cursorStyle: "block",
     fontSize: 14,
@@ -120,38 +263,165 @@ function initTerminal() {
     }
   })
 
-  fitAddon = new FitAddon()
-  terminal.loadAddon(fitAddon)
-  terminal.loadAddon(new WebLinksAddon())
+  panel.fitAddon = new FitAddon()
+  panel.terminal.loadAddon(panel.fitAddon)
+  panel.terminal.loadAddon(new WebLinksAddon())
 
-  terminal.open(terminalRef.value)
-  fitAddon.fit()
+  panel.terminal.open(container)
+  panel.fitAddon.fit()
 
-  terminal.onData((data) => {
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(new TextEncoder().encode(data))
+  panel.terminal.onData((data) => {
+    if (panel.ws?.readyState === WebSocket.OPEN) {
+      panel.ws.send(new TextEncoder().encode(data))
     }
   })
-
-  window.addEventListener("resize", handleResize)
 }
 
-function handleResize() {
-  if (fitAddon) {
-    fitAddon.fit()
-    sendResize()
+// 心跳保活机制
+function startHeartbeat(panel: TerminalPanel) {
+  stopHeartbeat(panel)
+
+  panel.heartbeatTimer = window.setInterval(() => {
+    if (panel.ws?.readyState === WebSocket.OPEN) {
+      // 发送心跳包 (opcode 2 表示心跳)
+      const heartbeat = new Uint8Array([2])
+      panel.ws.send(heartbeat)
+    }
+  }, HEARTBEAT_INTERVAL)
+}
+
+function stopHeartbeat(panel: TerminalPanel) {
+  if (panel.heartbeatTimer) {
+    clearInterval(panel.heartbeatTimer)
+    panel.heartbeatTimer = null
   }
 }
 
-onMounted(async () => {
-  await nextTick()
-  initTerminal()
-  connect()
+// 重连逻辑
+function attemptReconnect(panel: TerminalPanel, cdTo?: string) {
+  if (panel.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    panel.terminal?.write("\r\n\x1b[31m[重连失败，已达最大重试次数]\x1b[0m\r\n")
+    return
+  }
+
+  panel.reconnectAttempts++
+  panel.terminal?.write(`\r\n\x1b[33m[正在重连... (${panel.reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})]\x1b[0m\r\n`)
+
+  setTimeout(() => {
+    connectPanel(panel, cdTo)
+  }, 2000 * panel.reconnectAttempts)
+}
+
+function connectPanel(panel: TerminalPanel, cdTo?: string) {
+  if (panel.ws?.readyState === WebSocket.OPEN) return
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+  const token = localStorage.getItem("token")
+  const url = `${protocol}//${window.location.host}/ws/terminal?token=${token}`
+
+  panel.ws = new WebSocket(url)
+  panel.ws.binaryType = "arraybuffer"
+
+  panel.ws.onopen = () => {
+    panel.connected = true
+    panel.reconnectAttempts = 0
+    panel.terminal?.focus()
+    sendResize(panel)
+    startHeartbeat(panel)
+
+    if (cdTo && !panel.initialCdDone) {
+      panel.initialCdDone = true
+      setTimeout(() => {
+        if (panel.ws?.readyState === WebSocket.OPEN) {
+          const cdCmd = `cd ${JSON.stringify(cdTo)} && clear\r`
+          panel.ws.send(new TextEncoder().encode(cdCmd))
+        }
+      }, 300)
+    }
+  }
+
+  panel.ws.onmessage = (event) => {
+    if (event.data instanceof ArrayBuffer) {
+      const data = new Uint8Array(event.data)
+      // 检查是否是心跳响应 (opcode 3)
+      if (data.length === 1 && data[0] === 3) {
+        return
+      }
+      panel.terminal?.write(data)
+    } else {
+      panel.terminal?.write(event.data)
+    }
+  }
+
+  panel.ws.onclose = (event) => {
+    panel.connected = false
+    stopHeartbeat(panel)
+
+    // 非正常关闭时尝试重连
+    if (event.code !== 1000 && event.code !== 1001) {
+      attemptReconnect(panel, cdTo)
+    } else {
+      panel.terminal?.write("\r\n\x1b[31m[连接已断开]\x1b[0m\r\n")
+    }
+  }
+
+  panel.ws.onerror = () => {
+    // onclose 会随后被调用
+  }
+}
+
+function disconnectPanel(panel: TerminalPanel) {
+  stopHeartbeat(panel)
+  panel.ws?.close(1000, "User disconnected")
+  panel.ws = null
+  panel.connected = false
+}
+
+function sendResize(panel: TerminalPanel) {
+  if (!panel.ws || panel.ws.readyState !== WebSocket.OPEN || !panel.terminal) return
+
+  const cols = panel.terminal.cols
+  const rows = panel.terminal.rows
+
+  const resizeCmd = new Uint8Array([
+    1,
+    (cols >> 8) & 0xff, cols & 0xff,
+    (rows >> 8) & 0xff, rows & 0xff
+  ])
+  panel.ws.send(resizeCmd)
+}
+
+function handleResize() {
+  const tab = tabs.value.find(t => t.id === activeTabId.value)
+  tab?.panels.forEach(panel => {
+    panel.fitAddon?.fit()
+    sendResize(panel)
+  })
+}
+
+watch(activeTabId, (newId) => {
+  nextTick(() => {
+    const tab = tabs.value.find(t => t.id === newId)
+    tab?.panels.forEach(p => {
+      p.fitAddon?.fit()
+      sendResize(p)
+    })
+  })
+})
+
+onMounted(() => {
+  createTab()
+  window.addEventListener("resize", handleResize)
 })
 
 onUnmounted(() => {
-  disconnect()
-  terminal?.dispose()
+  tabs.value.forEach(tab => {
+    tab.panels.forEach(panel => {
+      stopHeartbeat(panel)
+      disconnectPanel(panel)
+      panel.terminal?.dispose()
+    })
+  })
   window.removeEventListener("resize", handleResize)
 })
 </script>
@@ -159,41 +429,136 @@ onUnmounted(() => {
 <template>
   <Layout title="Web 终端" :full-height="true">
     <template #actions>
-      <span
-        class="px-2 py-0.5 rounded text-xs"
-        :class="[connected ? 'bg-green-600 text-white' : 'bg-red-600 text-white']"
-      >
-        {{ status }}
-      </span>
       <button
-        v-if="!connected"
-        @click="connect"
-        class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded text-sm transition"
+        @click="createTab()"
+        class="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-white transition"
+        title="新建终端 Tab"
       >
-        连接
+        <Plus class="w-4 h-4" />
       </button>
       <button
-        v-else
-        @click="disconnect"
-        class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded text-sm transition"
+        @click="splitTerminal()"
+        class="p-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-white transition"
+        title="分屏（同步目录）"
       >
-        断开
+        <SplitSquareHorizontal class="w-4 h-4" />
       </button>
     </template>
 
-    <div ref="terminalRef" class="terminal-container"></div>
+    <div class="flex flex-col h-full">
+      <!-- Tab 栏 -->
+      <div class="flex items-center gap-1 px-2 py-1 bg-slate-800 border-b border-slate-700 overflow-x-auto">
+        <button
+          v-for="tab in tabs"
+          :key="tab.id"
+          @click="switchTab(tab.id)"
+          class="group flex items-center gap-2 px-3 py-1.5 rounded text-sm transition-all min-w-0"
+          :class="[
+            activeTabId === tab.id
+              ? 'bg-slate-700 text-white'
+              : 'text-slate-400 hover:bg-slate-700/50 hover:text-white'
+          ]"
+        >
+          <span
+            class="w-2 h-2 rounded-full flex-shrink-0"
+            :class="[tab.panels.every(p => p.connected) ? 'bg-green-500' : 'bg-red-500']"
+          ></span>
+          <span class="truncate">{{ tab.name }}</span>
+          <span v-if="tab.panels.length > 1" class="text-xs text-slate-500">({{ tab.panels.length }})</span>
+          <button
+            v-if="tabs.length > 1"
+            @click.stop="closeTab(tab.id)"
+            class="p-0.5 rounded opacity-0 group-hover:opacity-100 hover:bg-slate-600 transition-all"
+          >
+            <X class="w-3 h-3" />
+          </button>
+        </button>
+      </div>
+
+      <!-- 终端区域 -->
+      <div class="flex-1 bg-[#1a1b26] overflow-hidden relative">
+        <div
+          v-for="tab in tabs"
+          :key="tab.id"
+          class="absolute inset-0 flex"
+          :style="{ display: tab.id === activeTabId ? 'flex' : 'none' }"
+        >
+          <div
+            v-for="panel in tab.panels"
+            :key="panel.id"
+            class="terminal-panel"
+            :class="{ 'active': activePanelId === panel.id }"
+            @click="activatePanel(panel.id)"
+          >
+            <button
+              v-if="tab.panels.length > 1"
+              @click.stop="closePanel(tab.id, panel.id)"
+              class="panel-close-btn"
+            >
+              <X class="w-3 h-3" />
+            </button>
+            <div :id="`panel-term-${panel.id}`" class="terminal-content"></div>
+          </div>
+        </div>
+      </div>
+    </div>
   </Layout>
 </template>
 
 <style>
-.terminal-container {
-  height: calc(100vh - 180px);
-  background: #1a1b26;
-  border-radius: 8px;
+.terminal-panel {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  border-right: 1px solid #334155;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-panel:last-child {
+  border-right: none;
+}
+
+.terminal-panel.active {
+  outline: 1px solid #3b82f6;
+  outline-offset: -1px;
+}
+
+.terminal-content {
+  flex: 1;
+  padding: 8px;
   overflow: hidden;
 }
-.xterm {
+
+.terminal-content .xterm {
   height: 100%;
-  padding: 8px;
+}
+
+.panel-close-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 10;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(51, 65, 85, 0.9);
+  color: #94a3b8;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s;
+}
+
+.terminal-panel:hover .panel-close-btn {
+  opacity: 1;
+}
+
+.panel-close-btn:hover {
+  background: rgba(239, 68, 68, 0.9);
+  color: white;
 }
 </style>

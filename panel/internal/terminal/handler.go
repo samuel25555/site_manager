@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/user"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -16,6 +17,13 @@ import (
 )
 
 var jwtSecret []byte
+
+// 协议操作码
+const (
+	OpResize    = 1 // 调整窗口大小
+	OpHeartbeat = 2 // 心跳请求
+	OpPong      = 3 // 心跳响应
+)
 
 // SetJWTSecret 设置 JWT 密钥（从 auth 包调用）
 func SetJWTSecret(secret string) {
@@ -62,6 +70,16 @@ func validateToken(tokenString string) (int64, string, error) {
 	return userID, username, nil
 }
 
+// getDefaultDir 获取默认工作目录
+func getDefaultDir() string {
+	// 获取当前用户的 home 目录
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		return u.HomeDir
+	}
+	// 回退到 /root
+	return "/root"
+}
+
 // RegisterRoutes 注册路由
 func (h *TerminalHandler) RegisterRoutes(app *fiber.App) {
 	// WebSocket 升级中间件 - 必须验证 token
@@ -85,9 +103,13 @@ func (h *TerminalHandler) RegisterRoutes(app *fiber.App) {
 				})
 			}
 
+			// 获取 cwd 参数（可选）
+			cwd := c.Query("cwd", "")
+
 			// 将用户信息存入 Locals，传递给 WebSocket handler
 			c.Locals("user_id", userID)
 			c.Locals("username", username)
+			c.Locals("cwd", cwd)
 			c.Locals("allowed", true)
 
 			return c.Next()
@@ -109,12 +131,25 @@ func (h *TerminalHandler) HandleWebSocket(c *websocket.Conn) {
 		return
 	}
 
+	// 获取工作目录
+	cwd, _ := c.Locals("cwd").(string)
+	if cwd == "" {
+		cwd = getDefaultDir()
+	}
+
+	// 验证目录是否存在
+	if info, err := os.Stat(cwd); err != nil || !info.IsDir() {
+		cwd = getDefaultDir()
+	}
+
 	// 创建 PTY
 	cmd := exec.Command("/bin/bash")
+	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"LANG=en_US.UTF-8",
 		"LC_ALL=en_US.UTF-8",
+		"HOME="+getDefaultDir(),
 	)
 
 	ptmx, err := pty.Start(cmd)
@@ -159,16 +194,24 @@ func (h *TerminalHandler) HandleWebSocket(c *websocket.Conn) {
 
 		switch msgType {
 		case websocket.TextMessage, websocket.BinaryMessage:
-			// 检查是否是调整窗口大小的消息
-			if len(msg) > 0 && msg[0] == 1 {
-				// 格式: [1, cols高字节, cols低字节, rows高字节, rows低字节]
+			if len(msg) == 0 {
+				continue
+			}
+
+			switch msg[0] {
+			case OpResize:
+				// 调整窗口大小: [1, cols高字节, cols低字节, rows高字节, rows低字节]
 				if len(msg) >= 5 {
 					cols := uint16(msg[1])<<8 | uint16(msg[2])
 					rows := uint16(msg[3])<<8 | uint16(msg[4])
 					setWinsize(ptmx, cols, rows)
 				}
-			} else {
-				// 普通输入
+			case OpHeartbeat:
+				// 心跳请求，回复心跳响应
+				pong := []byte{OpPong}
+				c.WriteMessage(websocket.BinaryMessage, pong)
+			default:
+				// 普通输入，写入 PTY
 				ptmx.Write(msg)
 			}
 		}
@@ -199,6 +242,7 @@ func (h *TerminalHandler) ExecuteCommand(c *fiber.Ctx) error {
 	var req struct {
 		Command string `json:"command"`
 		Timeout int    `json:"timeout"`
+		Cwd     string `json:"cwd"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(400).JSON(fiber.Map{"status": false, "error": err.Error()})
@@ -217,6 +261,10 @@ func (h *TerminalHandler) ExecuteCommand(c *fiber.Ctx) error {
 	}
 
 	cmd := exec.Command("bash", "-c", req.Command)
+	if req.Cwd != "" {
+		cmd.Dir = req.Cwd
+	}
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"status": false, "error": err.Error()})

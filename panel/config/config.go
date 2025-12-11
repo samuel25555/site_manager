@@ -16,7 +16,7 @@ func Load() *Config {
 	// 默认配置
 	cfg := &Config{
 		DataDir:   "/opt/site_manager/panel/data",
-		BaseDir:   getEnv("BASE_DIR", "/www"),
+		BaseDir:   getEnv("BASE_DIR", "/"),
 		JWTSecret: getEnv("JWT_SECRET", "site_manager_panel_secret_key_change_me"),
 		SiteCLI:   "/usr/local/bin/site-new",
 	}

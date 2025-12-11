@@ -28,6 +28,12 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: "/software",
+      name: "software",
+      component: () => import("../views/Software.vue"),
+      meta: { requiresAuth: true }
+    },
+    {
       path: "/files",
       name: "files",
       component: () => import("../views/Files.vue"),
@@ -44,13 +50,25 @@ const router = createRouter({
       name: "firewall",
       component: () => import("../views/Firewall.vue"),
       meta: { requiresAuth: true }
+    },
+    {
+      path: "/logs",
+      name: "logs",
+      component: () => import("../views/Logs.vue"),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: "/cron",
+      name: "cron",
+      component: () => import("../views/Cron.vue"),
+      meta: { requiresAuth: true }
     }
   ]
 })
 
 router.beforeEach((to, _from, next) => {
   const authStore = useAuthStore()
-  
+
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     next("/login")
   } else if (to.path === "/login" && authStore.isAuthenticated) {

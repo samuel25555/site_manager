@@ -465,7 +465,10 @@ setup_firewall() {
     ufw default allow outgoing
 
     # 开放必要端口
-    ufw allow 22/tcp comment 'SSH'
+    # 检测 SSH 端口
+    SSH_PORT=$(ss -tlnp 2>/dev/null | grep sshd | awk '{print $4}' | grep -oE '[0-9]+$' | head -1)
+    SSH_PORT=${SSH_PORT:-22}
+    ufw allow "$SSH_PORT/tcp" comment 'SSH'
     ufw allow 80/tcp comment 'HTTP'
     ufw allow 443/tcp comment 'HTTPS'
     ufw allow "$PANEL_PORT/tcp" comment 'Site Manager Panel'

@@ -4,7 +4,7 @@ import { useRouter, useRoute } from "vue-router"
 import { useAuthStore } from "../stores/auth"
 import {
   LayoutDashboard, Globe, FolderOpen, Terminal, Shield,
-  LogOut, Server, ChevronRight
+  LogOut, Server, ChevronRight, Package, FileText, Clock
 } from "lucide-vue-next"
 
 defineProps<{
@@ -19,7 +19,10 @@ const authStore = useAuthStore()
 const menuItems = [
   { path: "/", name: "仪表盘", icon: LayoutDashboard },
   { path: "/sites", name: "站点管理", icon: Globe },
+  { path: "/software", name: "软件管理", icon: Package },
   { path: "/files", name: "文件管理", icon: FolderOpen },
+  { path: "/logs", name: "日志查看", icon: FileText },
+  { path: "/cron", name: "计划任务", icon: Clock },
   { path: "/terminal", name: "终端", icon: Terminal },
   { path: "/firewall", name: "防火墙", icon: Shield },
 ]
