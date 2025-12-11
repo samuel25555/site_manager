@@ -1,0 +1,13 @@
+# Binary
+site_manager_panel
+
+# Data
+data/
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# IDE
+.idea/
+.vscode/
