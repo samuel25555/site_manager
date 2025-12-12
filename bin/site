@@ -352,9 +352,31 @@ backup_menu() {
 }
 
 backup_site() {
-    site_list
-    read -p "域名: " d
-    [ -z "$d" ] && return
+    echo ""
+    echo -e "${CYAN}选择要备份的站点:${NC}"
+    
+    # 获取站点列表并编号
+    local i=1
+    local sites=()
+    for conf in "$NGINX_CONF_DIR"/*; do
+        [ -f "$conf" ] || continue
+        local name=$(basename "$conf")
+        [[ "$name" == "default" || "$name" == *.bak ]] && continue
+        local domain="${name%.conf}"
+        sites+=("$domain")
+        printf " %2d) %s\n" $i "$domain"
+        ((i++))
+    done
+    
+    [ ${#sites[@]} -eq 0 ] && echo "无站点" && return
+    echo "  0) 返回"
+    echo ""
+    read -p "编号: " n
+    
+    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    [ "$n" -gt ${#sites[@]} ] && echo -e "${RED}无效编号${NC}" && return
+    
+    local d="${sites[$((n-1))]}"
     local backup_dir="/www/backup"
     mkdir -p "$backup_dir"
     local file="$backup_dir/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
@@ -362,31 +384,95 @@ backup_site() {
 }
 
 restore_site() {
-    ls -lh /www/backup/*.tar.gz 2>/dev/null || { echo "无备份"; return; }
-    read -p "备份文件路径: " f
-    [ ! -f "$f" ] && echo -e "${RED}文件不存在${NC}" && return
+    echo ""
+    echo -e "${CYAN}选择要恢复的备份:${NC}"
+    
+    local i=1
+    local files=()
+    for f in /www/backup/*.tar.gz; do
+        [ -f "$f" ] || continue
+        files+=("$f")
+        printf " %2d) %s\n" $i "$(basename "$f")"
+        ((i++))
+    done
+    
+    [ ${#files[@]} -eq 0 ] && echo "无备份" && return
+    echo "  0) 返回"
+    echo ""
+    read -p "编号: " n
+    
+    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
+    
+    local f="${files[$((n-1))]}"
     tar -xzf "$f" -C "$SITES_DIR" && echo -e "${GREEN}恢复成功${NC}"
 }
 
 backup_db() {
-    read -p "数据库名 (留空备份全部): " db
+    echo ""
+    echo -e "${CYAN}选择要备份的数据库:${NC}"
+    
+    local i=1
+    local dbs=()
+    while read -r db; do
+        [[ "$db" =~ ^(Database|information_schema|performance_schema|mysql|sys)$ ]] && continue
+        dbs+=("$db")
+        printf " %2d) %s\n" $i "$db"
+        ((i++))
+    done < <(mysql -N -e "SHOW DATABASES;" 2>/dev/null)
+    
+    [ ${#dbs[@]} -eq 0 ] && echo "无数据库" && return
+    echo "  a) 备份全部"
+    echo "  0) 返回"
+    echo ""
+    read -p "编号: " n
+    
     local backup_dir="/www/backup"
     mkdir -p "$backup_dir"
-    if [ -z "$db" ]; then
+    
+    if [ "$n" = "a" ]; then
         local file="$backup_dir/all_db_$(date +%Y%m%d_%H%M%S).sql"
-        mysqldump --all-databases > "$file" && echo -e "${GREEN}备份成功: $file${NC}"
-    else
-        local file="$backup_dir/${db}_$(date +%Y%m%d_%H%M%S).sql"
-        mysqldump "$db" > "$file" && echo -e "${GREEN}备份成功: $file${NC}"
+        mysqldump --all-databases > "$file" 2>/dev/null && echo -e "${GREEN}备份成功: $file${NC}"
+        return
     fi
+    
+    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    [ "$n" -gt ${#dbs[@]} ] && echo -e "${RED}无效编号${NC}" && return
+    
+    local db="${dbs[$((n-1))]}"
+    local file="$backup_dir/${db}_$(date +%Y%m%d_%H%M%S).sql"
+    mysqldump "$db" > "$file" 2>/dev/null && echo -e "${GREEN}备份成功: $file${NC}"
 }
 
 restore_db() {
-    ls -lh /www/backup/*.sql 2>/dev/null || { echo "无备份"; return; }
-    read -p "数据库名: " db
-    read -p "SQL文件路径: " f
-    [ ! -f "$f" ] && echo -e "${RED}文件不存在${NC}" && return
-    mysql "$db" < "$f" && echo -e "${GREEN}恢复成功${NC}"
+    echo ""
+    echo -e "${CYAN}选择要恢复的备份:${NC}"
+    
+    local i=1
+    local files=()
+    for f in /www/backup/*.sql; do
+        [ -f "$f" ] || continue
+        files+=("$f")
+        printf " %2d) %s\n" $i "$(basename "$f")"
+        ((i++))
+    done
+    
+    [ ${#files[@]} -eq 0 ] && echo "无SQL备份" && return
+    echo "  0) 返回"
+    echo ""
+    read -p "编号: " n
+    
+    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
+    
+    local f="${files[$((n-1))]}"
+    
+    # 从文件名提取数据库名
+    local dbname=$(basename "$f" .sql | sed 's/_[0-9]*$//' | sed 's/_[0-9]*$//')
+    read -p "数据库名 [$dbname]: " input_db
+    dbname="${input_db:-$dbname}"
+    
+    mysql "$dbname" < "$f" 2>/dev/null && echo -e "${GREEN}恢复成功${NC}" || echo -e "${RED}恢复失败${NC}"
 }
 
 # ================== 安全管理 ==================
