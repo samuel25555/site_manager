@@ -445,18 +445,25 @@ site_list() {
     printf "%-30s %-10s %-10s %s\n" "站点" "类型" "状态" "路径"
     printf "%-30s %-10s %-10s %s\n" "----" "----" "----" "----"
     
-    local configs
-    configs=$(ls "$NGINX_CONF_DIR"/*.conf "$NGINX_CONF_DIR"/*.conf.disabled 2>/dev/null || true)
-    
-    for conf in $configs; do
+    for conf in "$NGINX_CONF_DIR"/*; do
         [ -f "$conf" ] || continue
         
         local filename="$(basename "$conf")"
-        local domain="${filename%.conf*}"
+        # 跳过 default 和备份文件
+        [[ "$filename" == "default" ]] && continue
+        [[ "$filename" == *.bak ]] && continue
+        
+        local domain="${filename%.conf}"
+        domain="${domain%.disabled}"
         local type="$(get_site_type "$domain")"
         local status="enabled"
         
-        if [[ "$conf" == *.disabled ]]; then
+        if [[ "$filename" == *.disabled ]]; then
+            status="disabled"
+        fi
+        
+        # 检查是否在 sites-enabled 中
+        if [ \! -L "$NGINX_ENABLED_DIR/$domain" ] && [ \! -L "$NGINX_ENABLED_DIR/${domain}.conf" ]; then
             status="disabled"
         fi
         
