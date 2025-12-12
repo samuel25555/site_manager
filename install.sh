@@ -558,6 +558,8 @@ EOF
         sed -i "s|BASE_DIR=.*|BASE_DIR=\"$BASE_DIR\"|" "$BASE_DIR/config/site_manager.conf"
 
         ln -sf "$BASE_DIR/bin/site" /usr/local/bin/site
+        ln -sf "$BASE_DIR/bin/sm" /usr/local/bin/sm
+        chmod +x "$BASE_DIR/bin/sm"
         chmod +x "$BASE_DIR/bin/site"
     fi
 
@@ -580,8 +582,8 @@ WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable site-manager
-    systemctl start site-manager
+    #systemctl enable site-manager  # 默认不自动启动
+    #systemctl start site-manager   # 需要时用 sm 1 启动
 
     log_success "面板安装完成"
 }
@@ -604,7 +606,7 @@ finish_install() {
     echo -e "${GREEN}║                                                           ║${NC}"
     echo -e "${GREEN}╠═══════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  面板地址: ${CYAN}http://${SERVER_IP}:${PANEL_PORT}${PANEL_PATH}${NC}  ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  Web 面板: 默认未启动，需要时执行 sm 1
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  用户名: ${YELLOW}${ADMIN_USER}${NC}                               ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  密  码: ${YELLOW}${ADMIN_PASS}${NC}                       ${GREEN}║${NC}"
@@ -627,7 +629,7 @@ finish_install() {
 Site Manager 安装信息
 =====================
 安装时间: $(date)
-面板地址: http://${SERVER_IP}:${PANEL_PORT}${PANEL_PATH}
+Web 面板: 默认未启动，需要时执行 sm 1
 用户名: ${ADMIN_USER}
 密码: ${ADMIN_PASS}
 $([ -n "$MYSQL_ROOT_PASS" ] && echo "MySQL root 密码: ${MYSQL_ROOT_PASS}")
