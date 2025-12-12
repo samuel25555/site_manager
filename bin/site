@@ -210,13 +210,116 @@ ssl_renew() {
 }
 
 # ================== 软件管理 ==================
+# ================== 软件管理 ==================
+SOFTWARE_DIR="/opt/site_manager/software"
+SOFTWARE_LIST="$SOFTWARE_DIR/list.json"
+
 software_menu() {
     echo ""
     echo -e "${CYAN}======== 软件管理 ========${NC}"
+    echo " 1) 查看已安装软件"
+    echo " 2) 安装软件"
+    echo " 3) 卸载软件"
+    echo " 4) 服务管理"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) soft_list;;
+        2) soft_install;;
+        3) soft_uninstall;;
+        4) service_menu;;
+    esac
+}
+
+soft_list() {
+    echo ""
+    printf "%-12s %-10s %-10s %s\n" "软件" "版本" "状态" "描述"
+    printf "%-12s %-10s %-10s %s\n" "----" "----" "----" "----"
+    
+    # 检查各软件状态
+    local items=("nginx:/usr/sbin/nginx" "php:/usr/bin/php" "mysql:/usr/bin/mysql" "redis:/usr/bin/redis-server" "nodejs:/usr/bin/node" "docker:/usr/bin/docker" "composer:/usr/local/bin/composer")
+    
+    for item in "${items[@]}"; do
+        local name="${item%%:*}"
+        local check="${item##*:}"
+        local version="-"
+        local status="${RED}未安装${NC}"
+        
+        if [ -f "$check" ] || [ -x "$check" ]; then
+            status="${GREEN}已安装${NC}"
+            case "$name" in
+                nginx) version=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                php) version=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                mysql) version=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                redis) version=$(redis-server --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                nodejs) version=$(node --version 2>/dev/null | tr -d 'v');;
+                docker) version=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                composer) version=$(composer --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+            esac
+        fi
+        printf "%-12s %-10s %-10b\n" "$name" "${version:-?}" "$status"
+    done
+    echo ""
+}
+
+soft_install() {
+    echo ""
+    echo -e "${CYAN}可安装的软件:${NC}"
+    echo " 1) nginx    - Web服务器"
+    echo " 2) php      - PHP语言"
+    echo " 3) mysql    - MySQL数据库"
+    echo " 4) redis    - Redis缓存"
+    echo " 5) nodejs   - Node.js运行时"
+    echo " 6) docker   - Docker容器"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    
+    local script=""
+    local version=""
+    case "$c" in
+        1) script="nginx.sh"; echo "可用版本: 1.24, 1.26, 1.27"; read -p "版本[1.26]: " version; version="${version:-1.26}";;
+        2) script="php.sh"; echo "可用版本: 7.4, 8.0, 8.1, 8.2, 8.3"; read -p "版本[8.2]: " version; version="${version:-8.2}";;
+        3) script="mysql.sh"; echo "可用版本: 5.7, 8.0, 8.4"; read -p "版本[8.0]: " version; version="${version:-8.0}";;
+        4) script="redis.sh";;
+        5) script="nodejs.sh"; echo "可用版本: 18, 20, 22"; read -p "版本[20]: " version; version="${version:-20}";;
+        6) script="docker.sh";;
+        0|*) return;;
+    esac
+    
+    if [ -n "$script" ] && [ -f "$SOFTWARE_DIR/install/$script" ]; then
+        bash "$SOFTWARE_DIR/install/$script" install "$version"
+    else
+        echo -e "${RED}安装脚本不存在${NC}"
+    fi
+}
+
+soft_uninstall() {
+    echo ""
+    echo -e "${YELLOW}选择要卸载的软件:${NC}"
+    echo " 1) nginx  2) php  3) mysql  4) redis  5) nodejs  6) docker"
+    read -p "选择: " c
+    
+    local script=""
+    case "$c" in
+        1) script="nginx.sh";; 2) script="php.sh";; 3) script="mysql.sh";;
+        4) script="redis.sh";; 5) script="nodejs.sh";; 6) script="docker.sh";;
+        *) return;;
+    esac
+    
+    if [ -n "$script" ] && [ -f "$SOFTWARE_DIR/install/$script" ]; then
+        bash "$SOFTWARE_DIR/install/$script" uninstall
+    fi
+}
+
+service_menu() {
+    echo ""
+    echo -e "${CYAN}======== 服务管理 ========${NC}"
     echo " 1) Nginx (重载/重启/状态)"
-    echo " 2) PHP (版本/重启)"
-    echo " 3) MySQL (状态/重启)"
-    echo " 4) Redis (状态/重启)"
+    echo " 2) PHP-FPM (重启/状态)"
+    echo " 3) MySQL (重启/状态)"
+    echo " 4) Redis (重启/状态)"
     echo " 0) 返回"
     echo ""
     read -p "选择: " c
@@ -227,48 +330,6 @@ software_menu() {
         4) redis_ctl;;
     esac
 }
-
-nginx_ctl() {
-    echo " 1) 重载配置  2) 重启  3) 测试配置  4) 状态"
-    read -p "[1]: " c
-    case "$c" in
-        2) systemctl restart nginx;;
-        3) nginx -t;;
-        4) systemctl status nginx --no-pager;;
-        *) systemctl reload nginx && echo -e "${GREEN}已重载${NC}";;
-    esac
-}
-
-php_ctl() {
-    echo " 1) 查看版本  2) 重启PHP-FPM"
-    read -p "[1]: " c
-    case "$c" in
-        2) for v in 7.4 8.0 8.1 8.2 8.3; do
-               systemctl is-active "php${v}-fpm" &>/dev/null && systemctl restart "php${v}-fpm" && echo "PHP $v 已重启"
-           done;;
-        *) php -v | head -1;;
-    esac
-}
-
-mysql_ctl() {
-    echo " 1) 状态  2) 重启  3) 数据库列表"
-    read -p "[1]: " c
-    case "$c" in
-        2) systemctl restart mysql && echo -e "${GREEN}已重启${NC}";;
-        3) mysql -e "SHOW DATABASES;" 2>/dev/null || echo "无法连接MySQL";;
-        *) systemctl status mysql --no-pager;;
-    esac
-}
-
-redis_ctl() {
-    echo " 1) 状态  2) 重启"
-    read -p "[1]: " c
-    case "$c" in
-        2) systemctl restart redis-server && echo -e "${GREEN}已重启${NC}";;
-        *) systemctl status redis-server --no-pager;;
-    esac
-}
-
 # ================== 备份管理 ==================
 backup_menu() {
     echo ""
@@ -473,6 +534,12 @@ show_help() {
     echo "  site db restore <库> <文件>  恢复数据库"
     echo ""
     echo "软件管理:"
+    echo "  site soft               查看已安装软件"
+    echo "  site install <软件> [版本]  安装软件"
+    echo "  site uninstall <软件>   卸载软件"
+    echo "    可用软件: nginx, php, mysql, redis, nodejs, docker"
+    echo ""
+    echo "服务管理:"
     echo "  site nginx reload|restart|status"
     echo "  site php restart"
     echo "  site mysql restart|status"
@@ -547,6 +614,9 @@ NGINX
                 deny) [ -n "$3" ] && ufw deny "$3/tcp";;
                 *) ufw status;;
             esac;;
+        soft) soft_list;;
+        install) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" install "$3" || echo "未知软件: $2"; } || echo "用法: site install <软件> [版本]";;
+        uninstall) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" uninstall || echo "未知软件: $2"; } || echo "用法: site uninstall <软件>";;
         panel) case "$2" in start)panel_start;; stop)panel_stop;; restart)panel_stop;sleep 1;panel_start;; *)panel_menu;; esac;;
         help|--help|-h) show_help;;
         *) show_help;;
