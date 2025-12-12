@@ -331,6 +331,13 @@ service_menu() {
     esac
 }
 # ================== 备份管理 ==================
+# ================== 备份配置 ==================
+BACKUP_CONF="/opt/site_manager/config/backup.conf"
+[ -f "$BACKUP_CONF" ] && source "$BACKUP_CONF"
+BACKUP_DIR="${BACKUP_DIR:-/www/backup}"
+BACKUP_KEEP="${BACKUP_KEEP:-7}"
+
+# ================== 备份管理 ==================
 backup_menu() {
     echo ""
     echo -e "${CYAN}======== 备份管理 ========${NC}"
@@ -339,6 +346,7 @@ backup_menu() {
     echo " 3) 备份数据库"
     echo " 4) 恢复数据库"
     echo " 5) 查看备份"
+    echo " 6) 备份设置"
     echo " 0) 返回"
     echo ""
     read -p "选择: " c
@@ -347,15 +355,50 @@ backup_menu() {
         2) restore_site;;
         3) backup_db;;
         4) restore_db;;
-        5) ls -lh /www/backup/ 2>/dev/null || echo "无备份";;
+        5) list_backups;;
+        6) backup_settings;;
     esac
+}
+
+# 上传到 FTP
+upload_to_ftp() {
+    local file="$1"
+    [ "$FTP_ENABLED" != "true" ] && return 0
+    [ -z "$FTP_HOST" ] && return 0
+    
+    log_info "上传到 FTP: $(basename "$file")"
+    
+    curl -s -T "$file" "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/$(basename "$file")" \
+        --user "${FTP_USER}:${FTP_PASS}" \
+        --ftp-create-dirs 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}FTP上传成功${NC}"
+        [ "$FTP_DELETE_LOCAL" = "true" ] && rm -f "$file" && echo "本地文件已删除"
+        return 0
+    else
+        echo -e "${RED}FTP上传失败${NC}"
+        return 1
+    fi
+}
+
+# 清理旧备份
+cleanup_backups() {
+    local pattern="$1"
+    local keep="${BACKUP_KEEP:-7}"
+    
+    # 本地清理
+    local count=$(ls -1 $BACKUP_DIR/${pattern}* 2>/dev/null | wc -l)
+    if [ "$count" -gt "$keep" ]; then
+        ls -1t $BACKUP_DIR/${pattern}* 2>/dev/null | tail -n +$((keep+1)) | xargs rm -f
+        echo -e "${CYAN}已清理旧备份，保留最新 $keep 份${NC}"
+    fi
 }
 
 backup_site() {
     echo ""
     echo -e "${CYAN}选择要备份的站点:${NC}"
     
-    # 获取站点列表并编号
     local i=1
     local sites=()
     for conf in "$NGINX_CONF_DIR"/*; do
@@ -369,18 +412,31 @@ backup_site() {
     done
     
     [ ${#sites[@]} -eq 0 ] && echo "无站点" && return
+    echo "  a) 备份全部"
     echo "  0) 返回"
     echo ""
     read -p "编号: " n
+    
+    mkdir -p "$BACKUP_DIR"
+    
+    if [ "$n" = "a" ]; then
+        for d in "${sites[@]}"; do
+            local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+            tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null && echo -e "${GREEN}备份: $d${NC}"
+            upload_to_ftp "$file"
+            cleanup_backups "${d}_"
+        done
+        return
+    fi
     
     [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
     [ "$n" -gt ${#sites[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local d="${sites[$((n-1))]}"
-    local backup_dir="/www/backup"
-    mkdir -p "$backup_dir"
-    local file="$backup_dir/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+    local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
     tar -czf "$file" -C "$SITES_DIR" "$d" && echo -e "${GREEN}备份成功: $file${NC}"
+    upload_to_ftp "$file"
+    cleanup_backups "${d}_"
 }
 
 restore_site() {
@@ -389,7 +445,7 @@ restore_site() {
     
     local i=1
     local files=()
-    for f in /www/backup/*.tar.gz; do
+    for f in $BACKUP_DIR/*.tar.gz; do
         [ -f "$f" ] || continue
         files+=("$f")
         printf " %2d) %s\n" $i "$(basename "$f")"
@@ -427,12 +483,15 @@ backup_db() {
     echo ""
     read -p "编号: " n
     
-    local backup_dir="/www/backup"
-    mkdir -p "$backup_dir"
+    mkdir -p "$BACKUP_DIR"
     
     if [ "$n" = "a" ]; then
-        local file="$backup_dir/all_db_$(date +%Y%m%d_%H%M%S).sql"
-        mysqldump --all-databases > "$file" 2>/dev/null && echo -e "${GREEN}备份成功: $file${NC}"
+        for db in "${dbs[@]}"; do
+            local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
+            mysqldump "$db" > "$file" 2>/dev/null && echo -e "${GREEN}备份: $db${NC}"
+            upload_to_ftp "$file"
+            cleanup_backups "${db}_"
+        done
         return
     fi
     
@@ -440,8 +499,10 @@ backup_db() {
     [ "$n" -gt ${#dbs[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local db="${dbs[$((n-1))]}"
-    local file="$backup_dir/${db}_$(date +%Y%m%d_%H%M%S).sql"
+    local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
     mysqldump "$db" > "$file" 2>/dev/null && echo -e "${GREEN}备份成功: $file${NC}"
+    upload_to_ftp "$file"
+    cleanup_backups "${db}_"
 }
 
 restore_db() {
@@ -450,7 +511,7 @@ restore_db() {
     
     local i=1
     local files=()
-    for f in /www/backup/*.sql; do
+    for f in $BACKUP_DIR/*.sql; do
         [ -f "$f" ] || continue
         files+=("$f")
         printf " %2d) %s\n" $i "$(basename "$f")"
@@ -466,13 +527,112 @@ restore_db() {
     [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local f="${files[$((n-1))]}"
-    
-    # 从文件名提取数据库名
     local dbname=$(basename "$f" .sql | sed 's/_[0-9]*$//' | sed 's/_[0-9]*$//')
     read -p "数据库名 [$dbname]: " input_db
     dbname="${input_db:-$dbname}"
     
     mysql "$dbname" < "$f" 2>/dev/null && echo -e "${GREEN}恢复成功${NC}" || echo -e "${RED}恢复失败${NC}"
+}
+
+list_backups() {
+    echo ""
+    echo -e "${CYAN}======== 本地备份 ========${NC}"
+    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
+        ls -lh "$BACKUP_DIR" | grep -v ^total
+        echo ""
+        echo -e "保留策略: 最新 ${YELLOW}$BACKUP_KEEP${NC} 份"
+    else
+        echo "无备份"
+    fi
+    
+    if [ "$FTP_ENABLED" = "true" ]; then
+        echo ""
+        echo -e "${CYAN}======== FTP远程备份 ========${NC}"
+        echo -e "服务器: ${FTP_HOST}:${FTP_PORT}"
+        echo -e "路径: ${FTP_PATH}"
+    fi
+}
+
+backup_settings() {
+    echo ""
+    echo -e "${CYAN}======== 备份设置 ========${NC}"
+    echo -e " 本地目录: $BACKUP_DIR"
+    echo -e " 保留份数: $BACKUP_KEEP"
+    echo -e " FTP备份:  $([ "$FTP_ENABLED" = "true" ] && echo -e "${GREEN}已开启${NC}" || echo -e "${RED}未开启${NC}")"
+    [ "$FTP_ENABLED" = "true" ] && echo -e " FTP服务器: $FTP_HOST:$FTP_PORT"
+    echo ""
+    echo " 1) 设置保留份数"
+    echo " 2) 配置FTP"
+    echo " 3) 测试FTP连接"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) set_backup_keep;;
+        2) set_ftp_config;;
+        3) test_ftp;;
+    esac
+}
+
+set_backup_keep() {
+    read -p "保留最近多少份备份 [$BACKUP_KEEP]: " n
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return
+    sed -i "s/^BACKUP_KEEP=.*/BACKUP_KEEP=$n/" "$BACKUP_CONF"
+    BACKUP_KEEP=$n
+    echo -e "${GREEN}已设置保留 $n 份${NC}"
+}
+
+set_ftp_config() {
+    echo ""
+    echo -e "${CYAN}配置FTP远程备份${NC}"
+    read -p "FTP服务器地址: " host
+    read -p "FTP端口 [21]: " port
+    port="${port:-21}"
+    read -p "FTP用户名: " user
+    read -s -p "FTP密码: " pass
+    echo ""
+    read -p "远程目录 [/backup]: " path
+    path="${path:-/backup}"
+    read -p "上传后删除本地文件? (y/n) [n]: " del
+    del="$([ "$del" = "y" ] && echo "true" || echo "false")"
+    
+    # 保存配置
+    cat > "$BACKUP_CONF" << CONF
+# 备份配置
+BACKUP_DIR="$BACKUP_DIR"
+BACKUP_KEEP=$BACKUP_KEEP
+
+# FTP配置
+FTP_ENABLED=true
+FTP_HOST="$host"
+FTP_PORT=$port
+FTP_USER="$user"
+FTP_PASS="$pass"
+FTP_PATH="$path"
+FTP_DELETE_LOCAL=$del
+CONF
+    chmod 600 "$BACKUP_CONF"
+    source "$BACKUP_CONF"
+    echo -e "${GREEN}FTP配置已保存${NC}"
+}
+
+test_ftp() {
+    [ "$FTP_ENABLED" != "true" ] && echo -e "${YELLOW}FTP未配置${NC}" && return
+    
+    echo "测试连接 $FTP_HOST..."
+    echo "test" > /tmp/ftp_test.txt
+    curl -s -T /tmp/ftp_test.txt "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/ftp_test.txt" \
+        --user "${FTP_USER}:${FTP_PASS}" --ftp-create-dirs 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}FTP连接成功!${NC}"
+        # 删除测试文件
+        curl -s "ftp://${FTP_HOST}:${FTP_PORT}" --user "${FTP_USER}:${FTP_PASS}" \
+            -Q "DELE ${FTP_PATH}/ftp_test.txt" 2>/dev/null
+    else
+        echo -e "${RED}FTP连接失败${NC}"
+    fi
+    rm -f /tmp/ftp_test.txt
 }
 
 # ================== 安全管理 ==================
