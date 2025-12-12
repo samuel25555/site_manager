@@ -108,7 +108,7 @@ site_create() {
         echo "<h1>Welcome to $domain</h1>" > "$site_path/index.html"
         local root="$site_path"
     fi
-    chown -R www:www "$site_path"
+    chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
 
     # 生成配置
     cat > "$conf_path" << NGINX
@@ -506,7 +506,7 @@ handle_cli() {
                 echo "<h1>$domain</h1>" > "$site_path/index.html"
                 root="$site_path"
             fi
-            chown -R www:www "$site_path"
+            chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
             cat > "$conf_path" << NGINX
 server {
     listen 80;
