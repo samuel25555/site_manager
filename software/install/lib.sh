@@ -13,7 +13,7 @@ NC="\033[0m"
 # 路径
 SOFTWARE_DIR="/opt/site_manager/software"
 INSTALL_DIR="$SOFTWARE_DIR/install"
-LOG_DIR="/var/log/site_manager"
+LOG_DIR="/www/wwwlogs/site_manager"
 mkdir -p "$LOG_DIR"
 
 # ========== 系统检测 ==========

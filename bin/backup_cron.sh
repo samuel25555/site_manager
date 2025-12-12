@@ -7,7 +7,7 @@
 source /opt/site_manager/config/backup.conf 2>/dev/null
 BACKUP_DIR="${BACKUP_DIR:-/www/backup}"
 SITES_DIR="/www/wwwroot"
-LOG_FILE="/var/log/site_manager/backup.log"
+LOG_FILE="/www/wwwlogs/site_manager/backup.log"
 EXCLUDE_CONF="/opt/site_manager/config/backup_exclude.conf"
 
 # 按类型分目录

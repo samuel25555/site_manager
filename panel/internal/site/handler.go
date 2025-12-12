@@ -18,7 +18,7 @@ import (
 const nginxConfigDir = "/etc/nginx/sites-available"
 const nginxEnabledDir = "/etc/nginx/sites-enabled"
 const sitesDir = "/www/wwwroot"
-const logsDir = "/var/log/nginx/sites"
+const logsDir = "/www/wwwlogs"
 
 type Site struct {
 	Domain string `json:"domain"`
@@ -300,7 +300,7 @@ phpinfo();
 	}
 
 	// 设置权限
-	exec.Command("chown", "-R", "www-data:www-data", sitePath).Run()
+	exec.Command("chown", "-R", "www:www", sitePath).Run()
 
 	// 生成 nginx 配置
 	nginxConfig := generateNginxConfig(req)

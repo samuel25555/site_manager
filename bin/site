@@ -26,6 +26,72 @@ NC="\033[0m"
 NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/sites-available}"
 NGINX_ENABLED_DIR="${NGINX_ENABLED_DIR:-/etc/nginx/sites-enabled}"
 SITES_DIR="${SITES_DIR:-/www/wwwroot}"
+LOGS_DIR="${LOGS_DIR:-/www/wwwlogs}"
+
+# 自动检测已安装的 PHP-FPM 版本
+detect_php_fpm() {
+    local php_sock=""
+    for v in 8.3 8.2 8.1 8.0 7.4; do
+        if [[ -S "/run/php/php${v}-fpm.sock" ]]; then
+            php_sock="/run/php/php${v}-fpm.sock"
+            break
+        fi
+    done
+    # 如果没找到，默认使用 8.3
+    echo "${php_sock:-/run/php/php8.3-fpm.sock}"
+}
+PHP_FPM_SOCK=$(detect_php_fpm)
+
+# 检查指定 PHP 版本是否已安装
+check_php_installed() {
+    local version="$1"  # 如 7.3, 8.0, 8.3
+    [[ -S "/run/php/php${version}-fpm.sock" ]] && return 0
+    command -v "php${version}" &>/dev/null && return 0
+    return 1
+}
+
+# 安装指定 PHP 版本
+install_php_version() {
+    local version="$1"
+    echo -e "${CYAN}正在安装 PHP ${version}...${NC}"
+    
+    # 添加 PHP 源 (如果不存在)
+    if [[ ! -f /etc/apt/sources.list.d/php.list ]]; then
+        curl -sSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/php-archive-keyring.gpg 2>/dev/null
+        echo "deb [signed-by=/usr/share/keyrings/php-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+        apt-get update -qq
+    fi
+    
+    local extensions="fpm cli common mysql curl gd mbstring xml zip bcmath redis intl"
+    local pkgs=""
+    for ext in $extensions; do
+        pkgs="$pkgs php${version}-${ext}"
+    done
+    
+    apt-get install -y -qq $pkgs > /dev/null 2>&1 || { echo -e "${RED}PHP ${version} 安装失败${NC}"; return 1; }
+    
+    # 配置 PHP-FPM
+    local fpm_conf="/etc/php/${version}/fpm/pool.d/www.conf"
+    if [[ -f "$fpm_conf" ]]; then
+        sed -i "s/^user = .*/user = www/" "$fpm_conf"
+        sed -i "s/^group = .*/group = www/" "$fpm_conf"
+        sed -i "s/^listen.owner = .*/listen.owner = www/" "$fpm_conf"
+        sed -i "s/^listen.group = .*/listen.group = www/" "$fpm_conf"
+    fi
+    
+    systemctl enable "php${version}-fpm" 2>/dev/null
+    systemctl restart "php${version}-fpm"
+    echo -e "${GREEN}PHP ${version} 安装完成${NC}"
+    return 0
+}
+
+# 解析 PHP 类型参数 (php73 -> 7.3)
+parse_php_version() {
+    local type="$1"
+    if [[ "$type" =~ ^php([0-9])([0-9]+)$ ]]; then
+        echo "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+    fi
+}
 
 # ================== 主菜单 ==================
 show_menu() {
@@ -71,17 +137,25 @@ site_menu() {
 
 site_list() {
     echo ""
-    printf "%-30s %-10s %-10s\n" "域名" "类型" "状态"
-    printf "%-30s %-10s %-10s\n" "----" "----" "----"
+    printf "%-30s %-12s %-10s\n" "域名" "类型" "状态"
+    printf "%-30s %-12s %-10s\n" "----" "----" "----"
     for conf in "$NGINX_CONF_DIR"/*; do
         [ -f "$conf" ] || continue
         local name=$(basename "$conf")
         [[ "$name" == "default" || "$name" == *.bak ]] && continue
         local domain="${name%.conf}"
-        local type=$(grep -q "fastcgi_pass" "$conf" && echo "php" || (grep -q "proxy_pass" "$conf" && echo "proxy" || echo "static"))
+        local type="static"
+        local php_ver=""
+        # 检测类型和 PHP 版本
+        if grep -q "fastcgi_pass" "$conf"; then
+            php_ver=$(grep -oP "php\K[0-9]+\.[0-9]+" "$conf" | head -1)
+            type="php${php_ver:+ $php_ver}"
+        elif grep -q "proxy_pass" "$conf"; then
+            type="proxy"
+        fi
         local status="disabled"
         [ -L "$NGINX_ENABLED_DIR/$domain" ] || [ -L "$NGINX_ENABLED_DIR/$name" ] && status="${GREEN}enabled${NC}"
-        printf "%-30s %-10s %-10b\n" "$domain" "$type" "$status"
+        printf "%-30s %-12s %-10b\n" "$domain" "$type" "$status"
     done
     echo ""
 }
@@ -89,14 +163,45 @@ site_list() {
 site_create() {
     read -p "域名: " domain
     [ -z "$domain" ] && echo -e "${RED}域名不能为空${NC}" && return
-    echo " 1) PHP  2) 静态  3) 反向代理"
+    
+    echo -e " ${CYAN}选择站点类型:${NC}"
+    echo " 1) PHP 8.3    4) PHP 7.4"
+    echo " 2) PHP 8.1    5) 静态站点"
+    echo " 3) PHP 8.0    6) 反向代理"
     read -p "类型 [1]: " t
-    case "$t" in 2) type="static";; 3) type="proxy";; *) type="php";; esac
+    
+    local type="" php_version=""
+    case "$t" in
+        1|"") type="php"; php_version="8.3";;
+        2) type="php"; php_version="8.1";;
+        3) type="php"; php_version="8.0";;
+        4) type="php"; php_version="7.4";;
+        5) type="static";;
+        6) type="proxy";;
+        *) type="php"; php_version="8.3";;
+    esac
 
+    _do_site_create "$domain" "$type" "$php_version"
+}
+
+# 实际创建站点的函数
+_do_site_create() {
+    local domain="$1"
+    local type="$2"
+    local php_version="$3"
+    
     local site_path="$SITES_DIR/$domain"
     local conf_path="$NGINX_CONF_DIR/$domain"
 
-    [ -f "$conf_path" ] && echo -e "${RED}站点已存在${NC}" && return
+    [ -f "$conf_path" ] && echo -e "${RED}站点已存在${NC}" && return 1
+
+    # PHP 站点检查并安装
+    if [[ "$type" == "php" && -n "$php_version" ]]; then
+        if ! check_php_installed "$php_version"; then
+            echo -e "${YELLOW}PHP $php_version 未安装，正在自动安装...${NC}"
+            install_php_version "$php_version" || return 1
+        fi
+    fi
 
     # 创建目录
     if [ "$type" = "php" ]; then
@@ -118,20 +223,21 @@ server {
     root $root;
     index index.php index.html;
 
-    access_log /var/log/nginx/${domain}_access.log;
-    error_log /var/log/nginx/${domain}_error.log;
+    access_log $LOGS_DIR/${domain}_access.log;
+    error_log $LOGS_DIR/${domain}_error.log;
 NGINX
 
     if [ "$type" = "php" ]; then
-        cat >> "$conf_path" << 'NGINX'
+        local php_sock="/run/php/php${php_version}-fpm.sock"
+        cat >> "$conf_path" << NGINX
 
     location / {
-        try_files $uri $uri/ /index.php?$query_string;
+        try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
-    location ~ \.php$ {
-        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
-        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+    location ~ \\.php\$ {
+        fastcgi_pass unix:${php_sock};
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
 }
@@ -159,9 +265,8 @@ NGINX
 
     ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
     nginx -t && systemctl reload nginx
-    echo -e "${GREEN}站点 $domain 创建成功${NC}"
+    echo -e "${GREEN}站点 $domain 创建成功 (${type}${php_version:+ $php_version})${NC}"
 }
-
 site_delete() {
     site_list
     read -p "域名: " domain
@@ -429,7 +534,7 @@ backup_site() {
         return
     fi
     
-    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#sites[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local d="${sites[$((n-1))]}"
@@ -457,7 +562,7 @@ restore_site() {
     echo ""
     read -p "编号: " n
     
-    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local f="${files[$((n-1))]}"
@@ -495,7 +600,7 @@ backup_db() {
         return
     fi
     
-    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#dbs[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local db="${dbs[$((n-1))]}"
@@ -523,7 +628,7 @@ restore_db() {
     echo ""
     read -p "编号: " n
     
-    [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ] && return
+    if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
     
     local f="${files[$((n-1))]}"
@@ -763,7 +868,7 @@ show_help() {
     echo ""
     echo "站点管理:"
     echo "  site list               查看所有站点"
-    echo "  site create <域名> <类型>  创建站点 (php/static/proxy)"
+    echo "  site create <域名> <类型>  创建站点 (php73/php80/php83/static/proxy)"
     echo "  site delete <域名>      删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
@@ -806,47 +911,38 @@ handle_cli() {
     case "$1" in
         list) site_list;;
         create) [ -n "$2" ] && [ -n "$3" ] && {
-            domain="$2"; type="$3"
-            local site_path="$SITES_DIR/$domain"
-            local conf_path="$NGINX_CONF_DIR/$domain"
-            [ -f "$conf_path" ] && { echo "站点已存在"; exit 1; }
-            if [ "$type" = "php" ]; then
-                mkdir -p "$site_path/public"
-                echo "<?php phpinfo();" > "$site_path/public/index.php"
-                root="$site_path/public"
+            domain="$2"; type_arg="$3"
+            local type="" php_version=""
+            # 解析类型参数
+            if [[ "$type_arg" =~ ^php([0-9])([0-9]+)$ ]]; then
+                type="php"
+                php_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            elif [[ "$type_arg" == "static" ]]; then
+                type="static"
+            elif [[ "$type_arg" == "proxy" ]]; then
+                type="proxy"
             else
-                mkdir -p "$site_path"
-                echo "<h1>$domain</h1>" > "$site_path/index.html"
-                root="$site_path"
+                echo "无效类型: $type_arg (支持: php73/php80/php81/php83/static/proxy)"
+                exit 1
             fi
-            chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
-            cat > "$conf_path" << NGINX
-server {
-    listen 80;
-    server_name $domain;
-    root $root;
-    index index.php index.html;
-NGINX
-            [ "$type" = "php" ] && cat >> "$conf_path" << 'NGINX'
-    location / { try_files $uri $uri/ /index.php?$query_string; }
-    location ~ \.php$ { fastcgi_pass unix:/run/php/php8.3-fpm.sock; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; }
-}
-NGINX
-            [ "$type" != "php" ] && echo "    location / { try_files \$uri \$uri/ /index.html; }" >> "$conf_path" && echo "}" >> "$conf_path"
-            ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
-            nginx -t && systemctl reload nginx && echo -e "${GREEN}创建成功${NC}"
-        } || echo "用法: site create <域名> <类型>";;
+            _do_site_create "$domain" "$type" "$php_version"
+        } || echo "用法: site create <域名> <类型> (php73/php80/php81/php83/static/proxy)";;
         delete) [ -n "$2" ] && { rm -f "$NGINX_ENABLED_DIR/$2" "$NGINX_CONF_DIR/$2"; systemctl reload nginx; echo "已删除"; } || echo "用法: site delete <域名>";;
         enable) [ -n "$2" ] && site_enable "$2" || echo "用法: site enable <域名>";;
         disable) [ -n "$2" ] && site_disable "$2" || echo "用法: site disable <域名>";;
         info) [ -n "$2" ] && site_info "$2" || echo "用法: site info <域名>";;
         ssl) [ "$2" = "renew" ] && ssl_renew || ([ -n "$2" ] && ssl_request "$2" || echo "用法: site ssl <域名>");;
-        backup) [ -n "$2" ] && { mkdir -p /www/backup; tar -czf "/www/backup/${2}_$(date +%Y%m%d_%H%M%S).tar.gz" -C "$SITES_DIR" "$2" && echo "备份成功"; } || echo "用法: site backup <域名>";;
+        backup) [ -n "$2" ] && { mkdir -p "$BACKUP_DIR"; tar -czf "$BACKUP_DIR/${2}_$(date +%Y%m%d_%H%M%S).tar.gz" -C "$SITES_DIR" "$2" && echo "备份成功"; } || echo "用法: site backup <域名>";;
         restore) [ -n "$2" ] && [ -n "$3" ] && tar -xzf "$3" -C "$SITES_DIR" || echo "用法: site restore <域名> <文件>";;
-        db) case "$2" in
-                backup) mkdir -p /www/backup; [ -n "$3" ] && mysqldump "$3" > "/www/backup/${3}_$(date +%Y%m%d_%H%M%S).sql" || mysqldump --all-databases > "/www/backup/all_$(date +%Y%m%d_%H%M%S).sql"; echo "备份成功";;
+        db) source /opt/site_manager/lib/db.sh; case "$2" in
+                create) db_create "$3";;
+                drop) db_drop "$3";;
+                import) db_import "$3" "$4";;
+                export) db_export "$3";;
+                list) db_list;;
+                backup) mkdir -p "$BACKUP_DIR"; [ -n "$3" ] && mysqldump "$3" > "$BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql" || mysqldump --all-databases > "$BACKUP_DIR/all_$(date +%Y%m%d_%H%M%S).sql"; echo "备份成功";;
                 restore) [ -n "$3" ] && [ -n "$4" ] && mysql "$3" < "$4" && echo "恢复成功" || echo "用法: site db restore <库> <文件>";;
-                *) echo "用法: site db backup [库名] | site db restore <库> <文件>";;
+                *) echo "用法: site db <create|drop|import|export|list|backup|restore>";;
             esac;;
         nginx) case "$2" in reload)systemctl reload nginx;; restart)systemctl restart nginx;; status)systemctl status nginx --no-pager;; *)systemctl reload nginx;; esac;;
         php) [ "$2" = "restart" ] && for v in 7.4 8.0 8.1 8.2 8.3; do systemctl restart "php${v}-fpm" 2>/dev/null; done || php -v;;

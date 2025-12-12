@@ -5,7 +5,7 @@
 # 用法: curl -sSL https://raw.githubusercontent.com/xxx/site_manager/master/install.sh | bash
 #===============================================================================
 
-set -e
+set -euo pipefail
 
 #---------------------------------------
 # 颜色定义
@@ -322,7 +322,7 @@ install_dependencies() {
         ca-certificates gnupg lsb-release \
         supervisor cron \
         ufw \
-        > /dev/null 2>&1
+        > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
     log_success "基础依赖安装完成"
 }
@@ -336,7 +336,7 @@ install_nginx() {
     echo ""
     log_info "安装 Nginx..."
 
-    apt-get install -y -qq nginx > /dev/null 2>&1
+    apt-get install -y -qq nginx > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
     # 配置 nginx 包含站点目录
     if ! grep -q "include $BASE_DIR/vhost/nginx" /etc/nginx/nginx.conf; then
@@ -375,7 +375,7 @@ install_php() {
             pkgs="$pkgs php${version}-${ext}"
         done
 
-        apt-get install -y -qq $pkgs > /dev/null 2>&1
+        apt-get install -y -qq $pkgs > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
         # 配置 PHP-FPM
         local fpm_conf="/etc/php/${version}/fpm/pool.d/www.conf"
@@ -409,7 +409,7 @@ install_database() {
         debconf-set-selections <<< "mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS"
         debconf-set-selections <<< "mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS"
 
-        apt-get install -y -qq mysql-server mysql-client > /dev/null 2>&1
+        apt-get install -y -qq mysql-server mysql-client > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
         systemctl enable mysql
         systemctl restart mysql
@@ -419,7 +419,7 @@ install_database() {
     elif [[ "$INSTALL_MYSQL" == "mariadb" ]]; then
         log_info "安装 MariaDB 10.11..."
 
-        apt-get install -y -qq mariadb-server mariadb-client > /dev/null 2>&1
+        apt-get install -y -qq mariadb-server mariadb-client > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
         # 设置 root 密码
         mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';"
@@ -441,7 +441,7 @@ install_redis() {
     echo ""
     log_info "安装 Redis..."
 
-    apt-get install -y -qq redis-server > /dev/null 2>&1
+    apt-get install -y -qq redis-server > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
     systemctl enable redis-server
     systemctl restart redis-server
@@ -459,10 +459,14 @@ setup_firewall() {
     # 生成随机端口
     PANEL_PORT=$(random_port)
 
-    # 配置 ufw
-    ufw --force reset > /dev/null 2>&1
-    ufw default deny incoming
-    ufw default allow outgoing
+    # 配置 ufw（增量添加规则，不重置已有配置）
+    if ! ufw status | grep -q "Status: active"; then
+        log_info "启用防火墙..."
+        ufw default deny incoming
+        ufw default allow outgoing
+    else
+        log_info "防火墙已启用，添加规则..."
+    fi
 
     # 开放必要端口
     # 检测 SSH 端口
@@ -504,7 +508,7 @@ install_panel() {
         # 安装 Go
         if ! command -v go &>/dev/null; then
             log_info "安装 Go..."
-            local go_version="1.21.13"
+            local go_version="1.22.4"
             curl -sSL "https://go.dev/dl/go${go_version}.linux-${ARCH}.tar.gz" | tar -C /usr/local -xz
             export PATH=$PATH:/usr/local/go/bin
         fi
@@ -519,7 +523,7 @@ install_panel() {
         # 安装 Node.js 和编译前端
         if ! command -v node &>/dev/null; then
             curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-            apt-get install -y -qq nodejs > /dev/null 2>&1
+            apt-get install -y -qq nodejs > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
         fi
 
         cd web && npm install && npm run build && cd ..
@@ -547,8 +551,15 @@ EOF
 
     # 安装 CLI 工具
     log_info "安装命令行工具..."
-    cd /tmp/site_manager 2>/dev/null || cd /tmp
 
+    # 从 GitHub 下载 CLI 工具（如果不存在本地源码）
+    if [[ ! -d /tmp/site_manager ]]; then
+        log_info "下载 CLI 工具..."
+        cd /tmp
+        git clone --depth 1 "https://github.com/$GITHUB_REPO.git" site_manager 2>/dev/null || true
+    fi
+
+    # 安装 CLI（无论是预编译还是源码编译都执行）
     if [[ -d /tmp/site_manager ]]; then
         cp -r /tmp/site_manager/bin "$BASE_DIR/"
         cp -r /tmp/site_manager/lib "$BASE_DIR/"
@@ -606,7 +617,7 @@ finish_install() {
     echo -e "${GREEN}║                                                           ║${NC}"
     echo -e "${GREEN}╠═══════════════════════════════════════════════════════════╣${NC}"
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  Web 面板: 默认未启动，需要时执行 sm 1
+    echo -e "${GREEN}║${NC}  Web 面板: 默认未启动，需要时执行 sm 1       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  用户名: ${YELLOW}${ADMIN_USER}${NC}                               ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}  密  码: ${YELLOW}${ADMIN_PASS}${NC}                       ${GREEN}║${NC}"
@@ -639,6 +650,10 @@ EOF
     chmod 600 "$BASE_DIR/panel/install_info.txt"
 
     log_info "安装信息已保存到: $BASE_DIR/panel/install_info.txt"
+
+    # 清理临时文件
+    rm -rf /tmp/site_manager 2>/dev/null || true
+    log_info "临时文件已清理"
 }
 
 #---------------------------------------

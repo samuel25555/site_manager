@@ -57,7 +57,7 @@ func List(c *fiber.Ctx) error {
 	}
 
 	// 扫描站点日志目录
-	siteLogsDir := "/srv/logs/nginx"
+	siteLogsDir := "/www/wwwlogs/nginx"
 	if entries, err := os.ReadDir(siteLogsDir); err == nil {
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -246,6 +246,7 @@ func isValidLogPath(path string) bool {
 	// 只允许访问特定目录下的日志
 	allowedPaths := []string{
 		"/var/log/",
+		"/www/wwwlogs/",
 		"/srv/logs/",
 		"/tmp/",
 	}

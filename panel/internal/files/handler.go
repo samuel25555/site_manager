@@ -86,7 +86,7 @@ func (h *FileHandler) validatePath(path string) (string, error) {
 
 	// 检查是否在允许的目录内
 	// 只允许访问 /www, /etc, /var/log 等
-	allowedPaths := []string{"/www", "/srv", "/home", "/var/log", "/etc/nginx", "/etc/php", "/tmp"}
+	allowedPaths := []string{"/www", "/srv", "/home", "/var/log", "/www/wwwlogs", "/etc/nginx", "/etc/php", "/tmp"}
 	allowed := false
 	for _, ap := range allowedPaths {
 		if strings.HasPrefix(path, ap) {

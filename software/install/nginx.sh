@@ -32,7 +32,7 @@ REPO
             ;;
     esac
 
-    mkdir -p /etc/nginx/sites-{available,enabled} /www/wwwroot /var/log/nginx/sites
+    mkdir -p /etc/nginx/sites-{available,enabled} /www/wwwroot /www/wwwlogs/nginx
     grep -q "sites-enabled" /etc/nginx/nginx.conf || sed -i '/http {/a\    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
     
     service_enable nginx
