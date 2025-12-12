@@ -1,340 +1,587 @@
 #!/bin/bash
 #
-# Site Manager - 站点管理工具
-# https://github.com/samuel25555/site_manager
+# Site Manager - 统一管理工具
+# 用法: site [命令]
 #
 
-# 错误处理: 使用 trap 而不是 set -e
-trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
-trap 'if [ $? -ne 0 ]; then log_error "命令失败: $last_command"; fi' ERR
+VERSION="2.0.0"
+ROOT_DIR="/opt/site_manager"
+PANEL_DIR="$ROOT_DIR/panel"
+PANEL_BIN="$PANEL_DIR/site_manager_panel"
+PANEL_CONFIG="$PANEL_DIR/config/config.json"
+PANEL_DB="$PANEL_DIR/data/panel.db"
 
-VERSION="1.1.0"
-
-# 解析真实路径 (处理符号链接)
-SOURCE="${BASH_SOURCE[0]}"
-while [ -h "$SOURCE" ]; do
-    DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
-    SOURCE="$(readlink "$SOURCE")"
-    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
-done
-SCRIPT_DIR="$( cd -P "$( dirname "$SOURCE" )" && pwd )"
-
-ROOT_DIR="$(dirname "$SCRIPT_DIR")"
-LIB_DIR="$ROOT_DIR/lib"
-CONFIG_DIR="$ROOT_DIR/config"
+# 颜色
+RED="\033[31m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+CYAN="\033[36m"
+NC="\033[0m"
 
 # 加载库文件
-source "$LIB_DIR/colors.sh"
-source "$LIB_DIR/utils.sh"
-source "$LIB_DIR/site.sh"
-source "$LIB_DIR/ssl.sh"
-source "$LIB_DIR/db.sh"
-source "$LIB_DIR/backup.sh"
-source "$LIB_DIR/logs.sh"
-source "$LIB_DIR/php.sh"
-source "$LIB_DIR/proxy.sh"
-source "$LIB_DIR/docker.sh"
-source "$LIB_DIR/panel.sh"
-source "$LIB_DIR/software.sh"
-source "$LIB_DIR/firewall.sh"
+[ -f "$ROOT_DIR/lib/colors.sh" ] && source "$ROOT_DIR/lib/colors.sh"
+[ -f "$ROOT_DIR/lib/utils.sh" ] && source "$ROOT_DIR/lib/utils.sh"
+[ -f "$ROOT_DIR/config/site_manager.conf" ] && source "$ROOT_DIR/config/site_manager.conf"
 
-# 加载配置
-source "$CONFIG_DIR/site_manager.conf"
+NGINX_CONF_DIR="${NGINX_CONF_DIR:-/etc/nginx/sites-available}"
+NGINX_ENABLED_DIR="${NGINX_ENABLED_DIR:-/etc/nginx/sites-enabled}"
+SITES_DIR="${SITES_DIR:-/www/wwwroot}"
 
-#---------------------------------------
-# 需要 root 权限的命令
-#---------------------------------------
-needs_root() {
-    local cmd="$1"
-    case "$cmd" in
-        create|delete|enable|disable|ssl|backup|restore|db|php|nginx|supervisor|restart|panel|install|uninstall|firewall)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
+# ================== 主菜单 ==================
+show_menu() {
+    clear
+    echo ""
+    echo -e "${GREEN}================ Site Manager v$VERSION ================${NC}"
+    echo ""
+    echo -e " 1) 站点管理              4) 安全管理"
+    echo -e " 2) 软件管理              5) 系统信息"
+    echo -e " 3) 备份管理              6) Web面板"
+    echo ""
+    echo -e " 0) 退出"
+    echo -e "${GREEN}=======================================================${NC}"
+    echo ""
+}
+
+# ================== 站点管理 ==================
+site_menu() {
+    echo ""
+    echo -e "${CYAN}======== 站点管理 ========${NC}"
+    echo " 1) 查看所有站点"
+    echo " 2) 创建站点"
+    echo " 3) 删除站点"
+    echo " 4) 启用站点"
+    echo " 5) 禁用站点"
+    echo " 6) 申请SSL证书"
+    echo " 7) 续期SSL证书"
+    echo " 8) 站点详情"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) site_list;;
+        2) site_create;;
+        3) site_delete;;
+        4) read -p "域名: " d; [ -n "$d" ] && site_enable "$d";;
+        5) read -p "域名: " d; [ -n "$d" ] && site_disable "$d";;
+        6) site_list; read -p "域名: " d; [ -n "$d" ] && ssl_request "$d";;
+        7) ssl_renew;;
+        8) read -p "域名: " d; [ -n "$d" ] && site_info "$d";;
     esac
 }
 
-usage() {
+site_list() {
     echo ""
-    echo -e "${GREEN}Site Manager v$VERSION${NC}"
-    echo ""
-    echo "Usage: site <command> [options]"
-    echo ""
-    echo -e "${CYAN}软件管理:${NC}"
-    echo "  install <software> [ver]  安装软件 (nginx|php|mysql|redis...)"
-    echo "  uninstall <software>      卸载软件"
-    echo "  software list             列出已安装软件"
-    echo "  software available        列出可安装软件"
-    echo ""
-    echo -e "${CYAN}防火墙:${NC}"
-    echo "  firewall status           防火墙状态"
-    echo "  firewall on|off           开启/关闭防火墙"
-    echo "  firewall allow <port>     开放端口"
-    echo "  firewall deny <port>      关闭端口"
-    echo "  firewall allow-ip <IP>    允许 IP"
-    echo "  firewall deny-ip <IP>     禁止 IP"
-    echo "  firewall preset <name>    快捷端口组 (web/ssh/mysql/redis)"
-    echo ""
-    echo -e "${CYAN}站点管理:${NC}"
-    echo "  create <domain> <type>    创建站点 (php|php:8.1|static|node|python|docker|proxy)"
-    echo "  delete <domain>           删除站点"
-    echo "  enable <domain>           启用站点"
-    echo "  disable <domain>          禁用站点"
-    echo "  list                      列出所有站点"
-    echo "  info <domain>             站点详情"
-    echo "  status [domain]           站点状态"
-    echo ""
-    echo -e "${CYAN}SSL 证书:${NC}"
-    echo "  ssl <domain> [--dns]      申请证书 (可选 DNS 验证)"
-    echo "  ssl renew                 续期所有证书"
-    echo ""
-    echo -e "${CYAN}日志与备份:${NC}"
-    echo "  logs <domain> [-f] [-e]   查看日志 (-f 实时, -e 错误)"
-    echo "  backup <domain>           备份站点"
-    echo "  restore <domain> <file>   恢复站点"
-    echo "  backups [domain]          列出备份"
-    echo ""
-    echo -e "${CYAN}数据库:${NC}"
-    echo "  db create <name>          创建数据库"
-    echo "  db drop <name>            删除数据库"
-    echo "  db import <name> [file]   导入数据"
-    echo "  db export <name>          导出数据"
-    echo "  db list                   列出数据库"
-    echo "  db backup-all             备份所有数据库"
-    echo "  db cron <hourly|daily|weekly|off>  定时备份"
-    echo "  db backups [name]         列出数据库备份"
-    echo ""
-    echo -e "${CYAN}PHP 管理:${NC}"
-    echo "  php list                  列出 PHP 版本"
-    echo "  php set <domain> <ver>    设置 PHP 版本"
-    echo ""
-    echo -e "${CYAN}反向代理:${NC}"
-    echo "  proxy <domain> set-target <url>         设置目标"
-    echo "  proxy <domain> add-upstream <server>    添加上游"
-    echo "  proxy <domain> remove-upstream <server> 删除上游"
-    echo ""
-    echo -e "${CYAN}服务管理:${NC}"
-    echo "  nginx <test|reload|restart>  Nginx 管理"
-    echo "  supervisor <reload|restart>  Supervisor 管理"
-    echo "  restart                      重启所有服务"
-    echo ""
-    echo -e "${CYAN}Docker:${NC}"
-    echo "  docker up <domain>        启动容器"
-    echo "  docker down <domain>      停止容器"
-    echo "  docker logs <domain>      查看日志"
-    echo ""
-    echo -e "${CYAN}Web 面板:${NC}"
-    echo "  panel start [--port=8888] 启动面板"
-    echo "  panel stop                停止面板"
-    echo "  panel status              面板状态"
-    echo "  panel password            重置密码"
+    printf "%-30s %-10s %-10s\n" "域名" "类型" "状态"
+    printf "%-30s %-10s %-10s\n" "----" "----" "----"
+    for conf in "$NGINX_CONF_DIR"/*; do
+        [ -f "$conf" ] || continue
+        local name=$(basename "$conf")
+        [[ "$name" == "default" || "$name" == *.bak ]] && continue
+        local domain="${name%.conf}"
+        local type=$(grep -q "fastcgi_pass" "$conf" && echo "php" || (grep -q "proxy_pass" "$conf" && echo "proxy" || echo "static"))
+        local status="disabled"
+        [ -L "$NGINX_ENABLED_DIR/$domain" ] || [ -L "$NGINX_ENABLED_DIR/$name" ] && status="${GREEN}enabled${NC}"
+        printf "%-30s %-10s %-10b\n" "$domain" "$type" "$status"
+    done
     echo ""
 }
 
-#---------------------------------------
-# 主入口
-#---------------------------------------
-main_cmd="$1"
+site_create() {
+    read -p "域名: " domain
+    [ -z "$domain" ] && echo -e "${RED}域名不能为空${NC}" && return
+    echo " 1) PHP  2) 静态  3) 反向代理"
+    read -p "类型 [1]: " t
+    case "$t" in 2) type="static";; 3) type="proxy";; *) type="php";; esac
 
-# 检查 root 权限
-if needs_root "$main_cmd" && [ "$EUID" -ne 0 ]; then
-    log_error "此命令需要 root 权限，请使用 sudo site $main_cmd"
-    exit 1
-fi
+    local site_path="$SITES_DIR/$domain"
+    local conf_path="$NGINX_CONF_DIR/$domain"
 
-case "$main_cmd" in
-    # 软件管理
-    install)
-        shift
-        software_main install "$@"
-        ;;
-    uninstall)
-        shift
-        software_main uninstall "$@"
-        ;;
-    software)
-        shift
-        software_main "$@"
-        ;;
+    [ -f "$conf_path" ] && echo -e "${RED}站点已存在${NC}" && return
 
-    # 防火墙
-    firewall|fw)
-        shift
-        firewall_main "$@"
-        ;;
+    # 创建目录
+    if [ "$type" = "php" ]; then
+        mkdir -p "$site_path/public"
+        echo "<?php phpinfo();" > "$site_path/public/index.php"
+        local root="$site_path/public"
+    else
+        mkdir -p "$site_path"
+        echo "<h1>Welcome to $domain</h1>" > "$site_path/index.html"
+        local root="$site_path"
+    fi
+    chown -R www-data:www-data "$site_path"
 
-    # 站点管理
-    create)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        [ -z "$3" ] && { log_error "缺少类型参数 (php|static|node|python|docker|proxy)"; exit 1; }
-        site_create "$2" "$3" "${@:4}"
-        ;;
-    delete)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        site_delete "$2"
-        ;;
-    enable)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        site_enable "$2"
-        ;;
-    disable)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        site_disable "$2"
-        ;;
-    list|ls)
-        site_list
-        ;;
-    info)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        site_info "$2"
-        ;;
-    status)
-        site_status "$2"
-        ;;
+    # 生成配置
+    cat > "$conf_path" << NGINX
+server {
+    listen 80;
+    server_name $domain;
+    root $root;
+    index index.php index.html;
 
-    # SSL
-    ssl)
-        shift
-        if [ "$1" == "renew" ]; then
-            ssl_renew
-        else
-            [ -z "$1" ] && { log_error "缺少域名参数"; exit 1; }
-            ssl_request "$@"
-        fi
-        ;;
+    access_log /var/log/nginx/${domain}_access.log;
+    error_log /var/log/nginx/${domain}_error.log;
+NGINX
 
-    # 日志与备份
-    logs)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        logs_view "$2" "${@:3}"
-        ;;
-    backup)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        backup_create "$2"
-        ;;
-    restore)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        [ -z "$3" ] && { log_error "缺少备份文件参数"; exit 1; }
-        backup_restore "$2" "$3"
-        ;;
-    backups)
-        backup_list "$2"
-        ;;
+    if [ "$type" = "php" ]; then
+        cat >> "$conf_path" << 'NGINX'
 
-    # 数据库
-    db)
-        case "$2" in
-            create)
-                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
-                db_create "$3"
-                ;;
-            backup-all)
-                db_backup_all
-                ;;
-            cron)
-                db_cron_setup "$3"
-                ;;
-            backups)
-                db_backups "$3"
-                ;;
-            drop)
-                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
-                db_drop "$3"
-                ;;
-            import)
-                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
-                db_import "$3" "$4"
-                ;;
-            export)
-                [ -z "$3" ] && { log_error "缺少数据库名"; exit 1; }
-                db_export "$3"
-                ;;
-            list)
-                db_list
-                ;;
-            *)
-                echo "Usage: site db <create|drop|import|export|list|backup-all|backups|cron> [args]"
-                exit 1
-                ;;
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/run/php/php8.3-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+}
+NGINX
+    elif [ "$type" = "proxy" ]; then
+        read -p "代理目标 (如 http://127.0.0.1:3000): " target
+        cat >> "$conf_path" << NGINX
+
+    location / {
+        proxy_pass $target;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+}
+NGINX
+    else
+        cat >> "$conf_path" << 'NGINX'
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+NGINX
+    fi
+
+    ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
+    nginx -t && systemctl reload nginx
+    echo -e "${GREEN}站点 $domain 创建成功${NC}"
+}
+
+site_delete() {
+    site_list
+    read -p "域名: " domain
+    [ -z "$domain" ] && return
+    read -p "确认删除 $domain? (y/n): " c
+    [ "$c" != "y" ] && return
+    rm -f "$NGINX_ENABLED_DIR/$domain" "$NGINX_CONF_DIR/$domain"
+    systemctl reload nginx
+    echo -e "${GREEN}站点配置已删除 (文件保留在 $SITES_DIR/$domain)${NC}"
+}
+
+site_enable() {
+    local domain="$1"
+    ln -sf "$NGINX_CONF_DIR/$domain" "$NGINX_ENABLED_DIR/$domain"
+    systemctl reload nginx
+    echo -e "${GREEN}$domain 已启用${NC}"
+}
+
+site_disable() {
+    local domain="$1"
+    rm -f "$NGINX_ENABLED_DIR/$domain"
+    systemctl reload nginx
+    echo -e "${GREEN}$domain 已禁用${NC}"
+}
+
+site_info() {
+    local domain="$1"
+    local conf="$NGINX_CONF_DIR/$domain"
+    [ ! -f "$conf" ] && echo -e "${RED}站点不存在${NC}" && return
+    echo ""
+    echo -e "域名: $domain"
+    echo -e "目录: $SITES_DIR/$domain"
+    echo -e "大小: $(du -sh "$SITES_DIR/$domain" 2>/dev/null | awk '{print $1}')"
+    echo -e "配置: $conf"
+    grep -q "ssl_certificate" "$conf" && echo -e "SSL:  ${GREEN}已启用${NC}" || echo -e "SSL:  未配置"
+    echo ""
+}
+
+ssl_request() {
+    local domain="$1"
+    certbot certonly --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email 2>&1
+}
+
+ssl_renew() {
+    certbot renew
+}
+
+# ================== 软件管理 ==================
+software_menu() {
+    echo ""
+    echo -e "${CYAN}======== 软件管理 ========${NC}"
+    echo " 1) Nginx (重载/重启/状态)"
+    echo " 2) PHP (版本/重启)"
+    echo " 3) MySQL (状态/重启)"
+    echo " 4) Redis (状态/重启)"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) nginx_ctl;;
+        2) php_ctl;;
+        3) mysql_ctl;;
+        4) redis_ctl;;
+    esac
+}
+
+nginx_ctl() {
+    echo " 1) 重载配置  2) 重启  3) 测试配置  4) 状态"
+    read -p "[1]: " c
+    case "$c" in
+        2) systemctl restart nginx;;
+        3) nginx -t;;
+        4) systemctl status nginx --no-pager;;
+        *) systemctl reload nginx && echo -e "${GREEN}已重载${NC}";;
+    esac
+}
+
+php_ctl() {
+    echo " 1) 查看版本  2) 重启PHP-FPM"
+    read -p "[1]: " c
+    case "$c" in
+        2) for v in 7.4 8.0 8.1 8.2 8.3; do
+               systemctl is-active "php${v}-fpm" &>/dev/null && systemctl restart "php${v}-fpm" && echo "PHP $v 已重启"
+           done;;
+        *) php -v | head -1;;
+    esac
+}
+
+mysql_ctl() {
+    echo " 1) 状态  2) 重启  3) 数据库列表"
+    read -p "[1]: " c
+    case "$c" in
+        2) systemctl restart mysql && echo -e "${GREEN}已重启${NC}";;
+        3) mysql -e "SHOW DATABASES;" 2>/dev/null || echo "无法连接MySQL";;
+        *) systemctl status mysql --no-pager;;
+    esac
+}
+
+redis_ctl() {
+    echo " 1) 状态  2) 重启"
+    read -p "[1]: " c
+    case "$c" in
+        2) systemctl restart redis-server && echo -e "${GREEN}已重启${NC}";;
+        *) systemctl status redis-server --no-pager;;
+    esac
+}
+
+# ================== 备份管理 ==================
+backup_menu() {
+    echo ""
+    echo -e "${CYAN}======== 备份管理 ========${NC}"
+    echo " 1) 备份站点"
+    echo " 2) 恢复站点"
+    echo " 3) 备份数据库"
+    echo " 4) 恢复数据库"
+    echo " 5) 查看备份"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) backup_site;;
+        2) restore_site;;
+        3) backup_db;;
+        4) restore_db;;
+        5) ls -lh /www/backup/ 2>/dev/null || echo "无备份";;
+    esac
+}
+
+backup_site() {
+    site_list
+    read -p "域名: " d
+    [ -z "$d" ] && return
+    local backup_dir="/www/backup"
+    mkdir -p "$backup_dir"
+    local file="$backup_dir/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+    tar -czf "$file" -C "$SITES_DIR" "$d" && echo -e "${GREEN}备份成功: $file${NC}"
+}
+
+restore_site() {
+    ls -lh /www/backup/*.tar.gz 2>/dev/null || { echo "无备份"; return; }
+    read -p "备份文件路径: " f
+    [ ! -f "$f" ] && echo -e "${RED}文件不存在${NC}" && return
+    tar -xzf "$f" -C "$SITES_DIR" && echo -e "${GREEN}恢复成功${NC}"
+}
+
+backup_db() {
+    read -p "数据库名 (留空备份全部): " db
+    local backup_dir="/www/backup"
+    mkdir -p "$backup_dir"
+    if [ -z "$db" ]; then
+        local file="$backup_dir/all_db_$(date +%Y%m%d_%H%M%S).sql"
+        mysqldump --all-databases > "$file" && echo -e "${GREEN}备份成功: $file${NC}"
+    else
+        local file="$backup_dir/${db}_$(date +%Y%m%d_%H%M%S).sql"
+        mysqldump "$db" > "$file" && echo -e "${GREEN}备份成功: $file${NC}"
+    fi
+}
+
+restore_db() {
+    ls -lh /www/backup/*.sql 2>/dev/null || { echo "无备份"; return; }
+    read -p "数据库名: " db
+    read -p "SQL文件路径: " f
+    [ ! -f "$f" ] && echo -e "${RED}文件不存在${NC}" && return
+    mysql "$db" < "$f" && echo -e "${GREEN}恢复成功${NC}"
+}
+
+# ================== 安全管理 ==================
+security_menu() {
+    echo ""
+    echo -e "${CYAN}======== 安全管理 ========${NC}"
+    echo " 1) 防火墙状态"
+    echo " 2) 开启防火墙"
+    echo " 3) 关闭防火墙"
+    echo " 4) 放行端口"
+    echo " 5) 封禁端口"
+    echo " 6) 删除规则"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) ufw status numbered;;
+        2) ufw --force enable && echo -e "${GREEN}已开启${NC}";;
+        3) ufw disable && echo -e "${GREEN}已关闭${NC}";;
+        4) read -p "端口: " p; ufw allow "$p/tcp" && echo -e "${GREEN}已放行${NC}";;
+        5) read -p "端口: " p; ufw deny "$p/tcp" && echo -e "${GREEN}已封禁${NC}";;
+        6) ufw status numbered; read -p "规则编号: " n; echo y | ufw delete "$n";;
+    esac
+}
+
+# ================== 系统信息 ==================
+system_menu() {
+    echo ""
+    echo -e "${CYAN}======== 系统信息 ========${NC}"
+    echo " 1) 系统概览"
+    echo " 2) 磁盘使用"
+    echo " 3) 内存使用"
+    echo " 4) 网络连接"
+    echo " 5) 进程列表"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) sys_overview;;
+        2) df -h | grep -E "^/dev|^Filesystem";;
+        3) free -h;;
+        4) ss -tlnp | head -20;;
+        5) ps aux --sort=-%cpu | head -15;;
+    esac
+}
+
+sys_overview() {
+    echo ""
+    echo -e " 主机: $(hostname)"
+    echo -e " 系统: $(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)"
+    echo -e " 内核: $(uname -r)"
+    echo -e " CPU:  $(nproc) 核"
+    echo -e " 内存: $(free -h | awk '/Mem:/{printf "%s/%s", $3, $2}')"
+    echo -e " 磁盘: $(df -h / | awk 'NR==2{printf "%s/%s (%s)", $3, $2, $5}')"
+    echo -e " 负载: $(cat /proc/loadavg | awk '{print $1, $2, $3}')"
+    echo -e " 运行: $(uptime -p)"
+}
+
+# ================== Web面板 ==================
+panel_menu() {
+    local status="${RED}已停止${NC}"
+    pgrep -f "site_manager_panel" > /dev/null && status="${GREEN}运行中${NC}"
+    echo ""
+    echo -e "${CYAN}======== Web面板 ========${NC}"
+    echo -e " 状态: $status"
+    echo ""
+    echo " 1) 启动"
+    echo " 2) 停止"
+    echo " 3) 重启"
+    echo " 4) 修改端口"
+    echo " 5) 重置密码"
+    echo " 0) 返回"
+    echo ""
+    read -p "选择: " c
+    case "$c" in
+        1) panel_start;;
+        2) panel_stop;;
+        3) panel_stop; sleep 1; panel_start;;
+        4) panel_port;;
+        5) panel_password;;
+    esac
+}
+
+panel_start() {
+    pgrep -f "site_manager_panel" > /dev/null && echo -e "${YELLOW}已在运行${NC}" && return
+    local port=$([ -f "$PANEL_CONFIG" ] && grep -o '"port":[[:space:]]*[0-9]*' "$PANEL_CONFIG" | grep -o '[0-9]*' || echo "8888")
+    cd "$PANEL_DIR" && nohup "$PANEL_BIN" -port "$port" > /tmp/panel.log 2>&1 &
+    sleep 2
+    local ip=$(curl -s --connect-timeout 2 ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+    echo -e "${GREEN}已启动: http://$ip:$port${NC}"
+}
+
+panel_stop() {
+    pkill -f "site_manager_panel" && echo -e "${GREEN}已停止${NC}" || echo -e "${YELLOW}未运行${NC}"
+}
+
+panel_port() {
+    local port=$([ -f "$PANEL_CONFIG" ] && grep -o '"port":[[:space:]]*[0-9]*' "$PANEL_CONFIG" | grep -o '[0-9]*' || echo "8888")
+    echo "当前端口: $port"
+    read -p "新端口: " p
+    [[ "$p" =~ ^[0-9]+$ ]] && [ "$p" -ge 1024 ] || { echo -e "${RED}无效${NC}"; return; }
+    [ -f "$PANEL_CONFIG" ] && sed -i "s/\"port\":[[:space:]]*[0-9]*/\"port\": $p/" "$PANEL_CONFIG"
+    ufw allow "$p/tcp" 2>/dev/null
+    echo -e "${GREEN}已改为 $p，请重启面板${NC}"
+}
+
+panel_password() {
+    [ ! -f "$PANEL_DB" ] && echo -e "${RED}数据库不存在${NC}" && return
+    local pass=$(tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 16)
+    if command -v python3 &>/dev/null; then
+        local hash=$(python3 -c "import bcrypt; print(bcrypt.hashpw('$pass'.encode(), bcrypt.gensalt()).decode())" 2>/dev/null)
+        [ -n "$hash" ] && sqlite3 "$PANEL_DB" "UPDATE users SET password='$hash' WHERE username='admin';"
+        echo -e "${GREEN}新密码: $pass${NC}"
+    else
+        echo -e "${YELLOW}需要 python3-bcrypt${NC}"
+    fi
+}
+
+# ================== 命令行接口 ==================
+show_help() {
+    echo ""
+    echo -e "${GREEN}Site Manager v$VERSION${NC}"
+    echo ""
+    echo "用法: site [命令] [参数]"
+    echo ""
+    echo "交互模式:"
+    echo "  site                    进入交互式菜单"
+    echo ""
+    echo "站点管理:"
+    echo "  site list               查看所有站点"
+    echo "  site create <域名> <类型>  创建站点 (php/static/proxy)"
+    echo "  site delete <域名>      删除站点"
+    echo "  site enable <域名>      启用站点"
+    echo "  site disable <域名>     禁用站点"
+    echo "  site info <域名>        站点详情"
+    echo ""
+    echo "SSL证书:"
+    echo "  site ssl <域名>         申请SSL证书"
+    echo "  site ssl renew          续期所有证书"
+    echo ""
+    echo "备份恢复:"
+    echo "  site backup <域名>      备份站点"
+    echo "  site restore <域名> <文件>  恢复站点"
+    echo "  site db backup [数据库]  备份数据库"
+    echo "  site db restore <库> <文件>  恢复数据库"
+    echo ""
+    echo "软件管理:"
+    echo "  site nginx reload|restart|status"
+    echo "  site php restart"
+    echo "  site mysql restart|status"
+    echo "  site redis restart|status"
+    echo ""
+    echo "安全管理:"
+    echo "  site firewall status|on|off"
+    echo "  site firewall allow <端口>"
+    echo "  site firewall deny <端口>"
+    echo ""
+    echo "Web面板:"
+    echo "  site panel start|stop|restart"
+    echo ""
+}
+
+# ================== 命令行处理 ==================
+handle_cli() {
+    case "$1" in
+        list) site_list;;
+        create) [ -n "$2" ] && [ -n "$3" ] && {
+            domain="$2"; type="$3"
+            local site_path="$SITES_DIR/$domain"
+            local conf_path="$NGINX_CONF_DIR/$domain"
+            [ -f "$conf_path" ] && { echo "站点已存在"; exit 1; }
+            if [ "$type" = "php" ]; then
+                mkdir -p "$site_path/public"
+                echo "<?php phpinfo();" > "$site_path/public/index.php"
+                root="$site_path/public"
+            else
+                mkdir -p "$site_path"
+                echo "<h1>$domain</h1>" > "$site_path/index.html"
+                root="$site_path"
+            fi
+            chown -R www-data:www-data "$site_path"
+            cat > "$conf_path" << NGINX
+server {
+    listen 80;
+    server_name $domain;
+    root $root;
+    index index.php index.html;
+NGINX
+            [ "$type" = "php" ] && cat >> "$conf_path" << 'NGINX'
+    location / { try_files $uri $uri/ /index.php?$query_string; }
+    location ~ \.php$ { fastcgi_pass unix:/run/php/php8.3-fpm.sock; fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name; include fastcgi_params; }
+}
+NGINX
+            [ "$type" != "php" ] && echo "    location / { try_files \$uri \$uri/ /index.html; }" >> "$conf_path" && echo "}" >> "$conf_path"
+            ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
+            nginx -t && systemctl reload nginx && echo -e "${GREEN}创建成功${NC}"
+        } || echo "用法: site create <域名> <类型>";;
+        delete) [ -n "$2" ] && { rm -f "$NGINX_ENABLED_DIR/$2" "$NGINX_CONF_DIR/$2"; systemctl reload nginx; echo "已删除"; } || echo "用法: site delete <域名>";;
+        enable) [ -n "$2" ] && site_enable "$2" || echo "用法: site enable <域名>";;
+        disable) [ -n "$2" ] && site_disable "$2" || echo "用法: site disable <域名>";;
+        info) [ -n "$2" ] && site_info "$2" || echo "用法: site info <域名>";;
+        ssl) [ "$2" = "renew" ] && ssl_renew || ([ -n "$2" ] && ssl_request "$2" || echo "用法: site ssl <域名>");;
+        backup) [ -n "$2" ] && { mkdir -p /www/backup; tar -czf "/www/backup/${2}_$(date +%Y%m%d_%H%M%S).tar.gz" -C "$SITES_DIR" "$2" && echo "备份成功"; } || echo "用法: site backup <域名>";;
+        restore) [ -n "$2" ] && [ -n "$3" ] && tar -xzf "$3" -C "$SITES_DIR" || echo "用法: site restore <域名> <文件>";;
+        db) case "$2" in
+                backup) mkdir -p /www/backup; [ -n "$3" ] && mysqldump "$3" > "/www/backup/${3}_$(date +%Y%m%d_%H%M%S).sql" || mysqldump --all-databases > "/www/backup/all_$(date +%Y%m%d_%H%M%S).sql"; echo "备份成功";;
+                restore) [ -n "$3" ] && [ -n "$4" ] && mysql "$3" < "$4" && echo "恢复成功" || echo "用法: site db restore <库> <文件>";;
+                *) echo "用法: site db backup [库名] | site db restore <库> <文件>";;
+            esac;;
+        nginx) case "$2" in reload)systemctl reload nginx;; restart)systemctl restart nginx;; status)systemctl status nginx --no-pager;; *)systemctl reload nginx;; esac;;
+        php) [ "$2" = "restart" ] && for v in 7.4 8.0 8.1 8.2 8.3; do systemctl restart "php${v}-fpm" 2>/dev/null; done || php -v;;
+        mysql) case "$2" in restart)systemctl restart mysql;; status)systemctl status mysql --no-pager;; *)systemctl status mysql --no-pager;; esac;;
+        redis) case "$2" in restart)systemctl restart redis-server;; *)systemctl status redis-server --no-pager;; esac;;
+        firewall) case "$2" in
+                status) ufw status numbered;;
+                on) ufw --force enable;;
+                off) ufw disable;;
+                allow) [ -n "$3" ] && ufw allow "$3/tcp";;
+                deny) [ -n "$3" ] && ufw deny "$3/tcp";;
+                *) ufw status;;
+            esac;;
+        panel) case "$2" in start)panel_start;; stop)panel_stop;; restart)panel_stop;sleep 1;panel_start;; *)panel_menu;; esac;;
+        help|--help|-h) show_help;;
+        *) show_help;;
+    esac
+}
+
+# ================== 交互式菜单 ==================
+interactive_menu() {
+    while true; do
+        show_menu
+        read -p "选项: " c
+        case "$c" in
+            1) site_menu;;
+            2) software_menu;;
+            3) backup_menu;;
+            4) security_menu;;
+            5) system_menu;;
+            6) panel_menu;;
+            0|q) exit 0;;
+            *) echo -e "${RED}无效选项${NC}";;
         esac
-        ;;
-
-    # PHP
-    php)
-        case "$2" in
-            list)
-                php_list
-                ;;
-            set)
-                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
-                [ -z "$4" ] && { log_error "缺少 PHP 版本参数"; exit 1; }
-                php_set "$3" "$4"
-                ;;
-            *)
-                echo "Usage: site php <list|set <domain> <version>>"
-                exit 1
-                ;;
-        esac
-        ;;
-
-    # 反向代理
-    proxy)
-        [ -z "$2" ] && { log_error "缺少域名参数"; exit 1; }
-        [ -z "$3" ] && { log_error "缺少操作参数"; exit 1; }
-        proxy_manage "$2" "$3" "$4"
-        ;;
-
-    # Docker
-    docker)
-        case "$2" in
-            up)
-                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
-                docker_up "$3"
-                ;;
-            down)
-                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
-                docker_down "$3"
-                ;;
-            logs)
-                [ -z "$3" ] && { log_error "缺少域名参数"; exit 1; }
-                docker_logs "$3"
-                ;;
-            *)
-                echo "Usage: site docker <up|down|logs> <domain>"
-                exit 1
-                ;;
-        esac
-        ;;
-
-    # 服务管理
-    nginx)
-        nginx_manage "$2"
-        ;;
-    supervisor)
-        supervisor_manage "$2"
-        ;;
-    restart)
-        services_restart
-        ;;
-
-    # 面板
-    panel)
-        panel_manage "$2" "${@:3}"
-        ;;
-
-    # 版本和帮助
-    -v|--version)
-        echo "Site Manager v$VERSION"
-        ;;
-    -h|--help|"")
-        usage
-        ;;
-    *)
-        log_error "未知命令: $main_cmd"
         echo ""
-        echo "使用 'site --help' 查看帮助"
-        exit 1
-        ;;
-esac
+        read -p "按回车继续..."
+    done
+}
+
+# ================== 主入口 ==================
+main() {
+    [ "$EUID" -ne 0 ] && echo "请用 root 权限运行" && exit 1
+
+    if [ $# -eq 0 ]; then
+        interactive_menu
+    else
+        handle_cli "$@"
+    fi
+}
+
+main "$@"
