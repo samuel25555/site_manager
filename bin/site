@@ -452,7 +452,7 @@ show_help() {
     echo "用法: site [命令] [参数]"
     echo ""
     echo "交互模式:"
-    echo "  site                    进入交互式菜单"
+    echo "  site -m                 进入交互式菜单"
     echo ""
     echo "站点管理:"
     echo "  site list               查看所有站点"
@@ -578,9 +578,12 @@ main() {
     [ "$EUID" -ne 0 ] && echo "请用 root 权限运行" && exit 1
 
     if [ $# -eq 0 ]; then
-        interactive_menu
+        show_help
     else
-        handle_cli "$@"
+        case "$1" in
+            -m|menu) interactive_menu;;
+            *) handle_cli "$@";;
+        esac
     fi
 }
 
