@@ -31,7 +31,7 @@
     "type": "数据库",
     "desc": "流行的开源关系数据库",
     "versions": ["5.7", "8.0", "8.4"],
-    "default": "8.0",
+    "default": "5.7",
     "shell": "mysql.sh",
     "checks": "/usr/bin/mysql",
     "service": "mysql",
