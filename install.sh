@@ -22,9 +22,16 @@ NC='\033[0m'
 #---------------------------------------
 # 全局变量
 #---------------------------------------
-VERSION="1.0.0"
+VERSION="2.0.0"
 GITHUB_REPO="samuel25555/site_manager"
 BASE_DIR="/www"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_MODE=false
+
+# 检测本地模式（从源码目录运行）
+if [[ -f "$SCRIPT_DIR/bin/site" && -d "$SCRIPT_DIR/lib" ]]; then
+    LOCAL_MODE=true
+fi
 PANEL_PORT=""
 PANEL_PATH=""
 ADMIN_USER=""
@@ -34,14 +41,17 @@ MYSQL_ROOT_PASS=""
 # 选择的软件
 INSTALL_NGINX=true
 INSTALL_PHP=""
-INSTALL_MYSQL=""
+INSTALL_MYSQL=false
 INSTALL_REDIS=false
+INSTALL_SUPERVISOR=false
+INSTALL_DOCKER=false
+INSTALL_PYTHON=false
 
 #---------------------------------------
 # 工具函数
 #---------------------------------------
 print_banner() {
-    clear
+    [[ -t 1 ]] && clear 2>/dev/null || true
     echo -e "${CYAN}"
     echo "╔═══════════════════════════════════════════════════════════╗"
     echo "║                                                           ║"
@@ -61,6 +71,19 @@ log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
+
+# 检测软件是否已安装，返回: 0=安装, 1=跳过
+# 用法: check_installed "软件名" "版本信息" && return
+check_installed() {
+    local name="$1"
+    local version="$2"
+    log_warn "$name 已安装 ($version)"
+    read -p "  [s]跳过 / [r]重装 [s]: " choice
+    case "${choice:-s}" in
+        r|R) return 1 ;;  # 重装
+        *)   log_info "跳过 $name"; return 0 ;;  # 跳过
+    esac
+}
 
 random_string() {
     local length=${1:-12}
@@ -187,74 +210,78 @@ choose_directory() {
 }
 
 #---------------------------------------
-# 选择软件
+# 选择软件 (交互式复选框)
 #---------------------------------------
 choose_software() {
     echo ""
     echo -e "${WHITE}[3/6] 选择要安装的软件...${NC}"
     echo ""
-    echo "提示: 输入编号选择，多个用空格分隔，直接回车安装推荐配置"
-    echo "      输入 'skip' 跳过软件安装，之后可通过命令行或面板安装"
-    echo ""
-    echo -e "${CYAN}Web 服务器:${NC}"
-    echo "  1) Nginx (必选，已包含)"
-    echo ""
-    echo -e "${CYAN}PHP 版本 (可多选):${NC}"
-    echo "  2) PHP 8.3 (推荐)"
-    echo "  3) PHP 8.1"
-    echo "  4) PHP 7.4"
-    echo ""
-    echo -e "${CYAN}数据库 (单选):${NC}"
-    echo "  5) MySQL 8.0 (推荐)"
-    echo "  6) MariaDB 10.11"
-    echo "  7) 不安装数据库"
-    echo ""
-    echo -e "${CYAN}缓存服务:${NC}"
-    echo "  8) Redis (推荐)"
-    echo ""
-    echo -e "${YELLOW}推荐配置: 1 2 5 8 (Nginx + PHP8.3 + MySQL8.0 + Redis)${NC}"
-    echo ""
 
-    read -p "请选择 [默认: 1 2 5 8]: " choices
-
-    if [[ "$choices" == "skip" ]]; then
-        INSTALL_NGINX=true
-        INSTALL_PHP=""
-        INSTALL_MYSQL=""
-        INSTALL_REDIS=false
-        log_info "跳过软件安装，仅安装面板"
-        return
+    # 检查 whiptail 是否可用
+    if ! command -v whiptail &>/dev/null; then
+        log_info "安装 whiptail..."
+        apt-get install -y -qq whiptail > /dev/null 2>&1
     fi
 
-    # 默认推荐配置
-    choices="${choices:-1 2 5 8}"
+    # 使用 whiptail 显示复选框
+    local choices
+    choices=$(whiptail --title "Site Manager 安装程序" \
+        --checklist "选择要安装的软件 (空格选择，回车确认):" 20 60 12 \
+        "nginx"      "Nginx Web服务器" ON \
+        "php83"      "PHP 8.3" OFF \
+        "php80"      "PHP 8.0" ON \
+        "php74"      "PHP 7.4" OFF \
+        "php73"      "PHP 7.3" OFF \
+        "mariadb"    "MariaDB 数据库" ON \
+        "redis"      "Redis 缓存" OFF \
+        "supervisor" "Supervisor 进程守护" ON \
+        "docker"     "Docker 容器" OFF \
+        "uv"         "uv Python项目管理" OFF \
+        3>&1 1>&2 2>&3)
+
+    # 用户取消
+    if [[ $? -ne 0 ]]; then
+        log_error "安装已取消"
+        exit 0
+    fi
 
     # 解析选择
+    INSTALL_NGINX=false
     INSTALL_PHP=""
-    INSTALL_MYSQL=""
+    INSTALL_MYSQL=false
     INSTALL_REDIS=false
+    INSTALL_SUPERVISOR=false
+    INSTALL_DOCKER=false
+    INSTALL_PYTHON=false
 
     for choice in $choices; do
+        choice=$(echo "$choice" | tr -d '"')
         case $choice in
-            1) INSTALL_NGINX=true ;;
-            2) INSTALL_PHP="$INSTALL_PHP 8.3" ;;
-            3) INSTALL_PHP="$INSTALL_PHP 8.1" ;;
-            4) INSTALL_PHP="$INSTALL_PHP 7.4" ;;
-            5) INSTALL_MYSQL="mysql" ;;
-            6) INSTALL_MYSQL="mariadb" ;;
-            7) INSTALL_MYSQL="" ;;
-            8) INSTALL_REDIS=true ;;
+            nginx)      INSTALL_NGINX=true ;;
+            php83)      INSTALL_PHP="$INSTALL_PHP 8.3" ;;
+            php80)      INSTALL_PHP="$INSTALL_PHP 8.0" ;;
+            php74)      INSTALL_PHP="$INSTALL_PHP 7.4" ;;
+            php73)      INSTALL_PHP="$INSTALL_PHP 7.3" ;;
+            mariadb)    INSTALL_MYSQL=true ;;
+            redis)      INSTALL_REDIS=true ;;
+            supervisor) INSTALL_SUPERVISOR=true ;;
+            docker)     INSTALL_DOCKER=true ;;
+            uv)         INSTALL_PYTHON=true ;;
         esac
     done
 
     INSTALL_PHP=$(echo "$INSTALL_PHP" | xargs)  # trim
 
+    # 显示确认信息
     echo ""
     log_info "已选择的软件:"
-    echo "  - Nginx: 是"
+    $INSTALL_NGINX && echo "  - Nginx: 是" || echo "  - Nginx: 否"
     [[ -n "$INSTALL_PHP" ]] && echo "  - PHP: $INSTALL_PHP" || echo "  - PHP: 否"
-    [[ -n "$INSTALL_MYSQL" ]] && echo "  - 数据库: $INSTALL_MYSQL" || echo "  - 数据库: 否"
-    echo "  - Redis: $INSTALL_REDIS"
+    $INSTALL_MYSQL && echo "  - MariaDB: 是" || echo "  - MariaDB: 否"
+    $INSTALL_REDIS && echo "  - Redis: 是" || echo "  - Redis: 否"
+    $INSTALL_SUPERVISOR && echo "  - Supervisor: 是" || echo "  - Supervisor: 否"
+    $INSTALL_DOCKER && echo "  - Docker: 是" || echo "  - Docker: 否"
+    $INSTALL_PYTHON && echo "  - uv: 是" || echo "  - uv: 否"
     echo ""
 
     read -p "确认安装? (y/n) [y]: " confirm
@@ -334,9 +361,16 @@ install_nginx() {
     if ! $INSTALL_NGINX; then return; fi
 
     echo ""
-    log_info "安装 Nginx..."
+    # 检测是否已安装
+    if command -v nginx &>/dev/null; then
+        check_installed "Nginx" "$(nginx -v 2>&1 | cut -d'/' -f2)" && return
+    fi
 
-    apt-get install -y -qq nginx > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
+    log_info "安装 Nginx..."
+    apt-get install -y -qq nginx > /dev/null 2>&1 || { log_error "Nginx 安装失败"; exit 1; }
+
+    # 配置 nginx 用户为 www
+    sed -i 's/^user .*/user www;/' /etc/nginx/nginx.conf
 
     # 配置 nginx 包含站点目录
     if ! grep -q "include $BASE_DIR/vhost/nginx" /etc/nginx/nginx.conf; then
@@ -356,10 +390,9 @@ install_php() {
     if [[ -z "$INSTALL_PHP" ]]; then return; fi
 
     echo ""
-    log_info "安装 PHP..."
-
     # 添加 PHP 源 (Sury)
     if [[ ! -f /etc/apt/sources.list.d/php.list ]]; then
+        log_info "添加 PHP 源..."
         curl -sSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /usr/share/keyrings/php-archive-keyring.gpg
         echo "deb [signed-by=/usr/share/keyrings/php-archive-keyring.gpg] https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
         apt-get update -qq
@@ -368,6 +401,11 @@ install_php() {
     local extensions="fpm cli common mysql curl gd mbstring xml zip bcmath redis intl"
 
     for version in $INSTALL_PHP; do
+        # 检测是否已安装
+        if command -v "php$version" &>/dev/null; then
+            check_installed "PHP $version" "$("php$version" -v 2>&1 | head -1 | cut -d' ' -f2)" && continue
+        fi
+
         log_info "安装 PHP $version..."
 
         local pkgs=""
@@ -375,7 +413,7 @@ install_php() {
             pkgs="$pkgs php${version}-${ext}"
         done
 
-        apt-get install -y -qq $pkgs > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
+        apt-get install -y -qq $pkgs > /dev/null 2>&1 || { log_error "PHP $version 安装失败"; exit 1; }
 
         # 配置 PHP-FPM
         local fpm_conf="/etc/php/${version}/fpm/pool.d/www.conf"
@@ -394,42 +432,33 @@ install_php() {
 }
 
 #---------------------------------------
-# 安装 MySQL/MariaDB
+# 安装 MariaDB
 #---------------------------------------
 install_database() {
-    if [[ -z "$INSTALL_MYSQL" ]]; then return; fi
+    if ! $INSTALL_MYSQL; then return; fi
 
     echo ""
+    # 检测是否已安装
+    if command -v mariadb &>/dev/null || command -v mysql &>/dev/null; then
+        local db_ver=$(mysql -V 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        check_installed "MariaDB/MySQL" "$db_ver" && return
+    fi
+
+    log_info "安装 MariaDB..."
     MYSQL_ROOT_PASS=$(random_password 16)
 
-    if [[ "$INSTALL_MYSQL" == "mysql" ]]; then
-        log_info "安装 MySQL 8.0..."
+    apt-get install -y -qq mariadb-server mariadb-client > /dev/null 2>&1 || { log_error "MariaDB 安装失败"; exit 1; }
 
-        # 预设 root 密码
-        debconf-set-selections <<< "mysql-server mysql-server/root_password password $MYSQL_ROOT_PASS"
-        debconf-set-selections <<< "mysql-server mysql-server/root_password_again password $MYSQL_ROOT_PASS"
+    # 启动服务
+    systemctl enable mariadb
+    systemctl start mariadb
 
-        apt-get install -y -qq mysql-server mysql-client > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
+    # 设置 root 密码
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';" 2>/dev/null || \
+    mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('$MYSQL_ROOT_PASS');" 2>/dev/null || true
+    mysql -u root -p"$MYSQL_ROOT_PASS" -e "FLUSH PRIVILEGES;" 2>/dev/null || true
 
-        systemctl enable mysql
-        systemctl restart mysql
-
-        log_success "MySQL 8.0 安装完成"
-
-    elif [[ "$INSTALL_MYSQL" == "mariadb" ]]; then
-        log_info "安装 MariaDB 10.11..."
-
-        apt-get install -y -qq mariadb-server mariadb-client > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
-
-        # 设置 root 密码
-        mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '$MYSQL_ROOT_PASS';"
-        mysql -u root -p"$MYSQL_ROOT_PASS" -e "FLUSH PRIVILEGES;"
-
-        systemctl enable mariadb
-        systemctl restart mariadb
-
-        log_success "MariaDB 安装完成"
-    fi
+    log_success "MariaDB 安装完成"
 }
 
 #---------------------------------------
@@ -439,14 +468,111 @@ install_redis() {
     if ! $INSTALL_REDIS; then return; fi
 
     echo ""
-    log_info "安装 Redis..."
+    # 检测是否已安装
+    if command -v redis-server &>/dev/null; then
+        check_installed "Redis" "$(redis-server --version | grep -oE 'v=[0-9.]+' | cut -d= -f2)" && return
+    fi
 
-    apt-get install -y -qq redis-server > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
+    log_info "安装 Redis..."
+    apt-get install -y -qq redis-server > /dev/null 2>&1 || { log_error "Redis 安装失败"; exit 1; }
 
     systemctl enable redis-server
     systemctl restart redis-server
 
     log_success "Redis 安装完成"
+}
+
+#---------------------------------------
+# 安装 Supervisor
+#---------------------------------------
+install_supervisor() {
+    if ! $INSTALL_SUPERVISOR; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v supervisord &>/dev/null; then
+        check_installed "Supervisor" "$(supervisord -v 2>&1)" && return
+    fi
+
+    log_info "安装 Supervisor..."
+    apt-get install -y -qq supervisor > /dev/null 2>&1 || { log_error "Supervisor 安装失败"; exit 1; }
+
+    # 创建配置目录
+    mkdir -p "$BASE_DIR/vhost/supervisor"
+
+    # 配置 supervisor 包含自定义目录
+    if ! grep -q "$BASE_DIR/vhost/supervisor" /etc/supervisor/supervisord.conf 2>/dev/null; then
+        echo "[include]" >> /etc/supervisor/supervisord.conf
+        echo "files = $BASE_DIR/vhost/supervisor/*.conf" >> /etc/supervisor/supervisord.conf
+    fi
+
+    systemctl enable supervisor
+    systemctl restart supervisor
+
+    log_success "Supervisor 安装完成"
+}
+
+#---------------------------------------
+# 安装 Docker
+#---------------------------------------
+install_docker() {
+    if ! $INSTALL_DOCKER; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v docker &>/dev/null; then
+        check_installed "Docker" "$(docker -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')" && return
+    fi
+
+    log_info "安装 Docker..."
+
+    # 获取系统 ID
+    source /etc/os-release
+
+    # 安装依赖
+    apt-get install -y -qq ca-certificates curl gnupg > /dev/null 2>&1
+
+    # 添加 Docker GPG 密钥
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL "https://download.docker.com/linux/$ID/gpg" | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    # 添加 Docker 仓库
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/$ID $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+
+    apt-get update -qq
+    apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin > /dev/null 2>&1 || { log_error "Docker 安装失败"; exit 1; }
+
+    # 启动服务
+    systemctl enable docker
+    systemctl start docker
+
+    # 添加 www 用户到 docker 组
+    usermod -aG docker www 2>/dev/null || true
+
+    log_success "Docker 安装完成"
+}
+
+#---------------------------------------
+# 安装 uv (Python 项目管理)
+#---------------------------------------
+install_python() {
+    if ! $INSTALL_PYTHON; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v uv &>/dev/null; then
+        check_installed "uv" "$(uv --version 2>&1 | cut -d' ' -f2)" && return
+    fi
+
+    log_info "安装 uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh > /dev/null 2>&1 || { log_error "uv 安装失败"; exit 1; }
+
+    # 创建全局符号链接
+    ln -sf /root/.local/bin/uv /usr/local/bin/uv 2>/dev/null || true
+    ln -sf /root/.local/bin/uvx /usr/local/bin/uvx 2>/dev/null || true
+
+    log_success "uv 安装完成"
 }
 
 #---------------------------------------
@@ -552,26 +678,37 @@ EOF
     # 安装 CLI 工具
     log_info "安装命令行工具..."
 
-    # 从 GitHub 下载 CLI 工具（如果不存在本地源码）
-    if [[ ! -d /tmp/site_manager ]]; then
-        log_info "下载 CLI 工具..."
-        cd /tmp
-        git clone --depth 1 "https://github.com/$GITHUB_REPO.git" site_manager 2>/dev/null || true
-    fi
+    if $LOCAL_MODE; then
+        # 本地模式：直接从源码目录创建符号链接
+        log_info "检测到本地源码目录，使用符号链接..."
+        ln -sf "$SCRIPT_DIR/bin/site" /usr/local/bin/site
+        chmod +x "$SCRIPT_DIR/bin/site"
+        if [[ -f "$SCRIPT_DIR/bin/backup_cron.sh" ]]; then
+            chmod +x "$SCRIPT_DIR/bin/backup_cron.sh"
+        fi
+        log_success "CLI 工具已链接: $SCRIPT_DIR/bin/site -> /usr/local/bin/site"
+    else
+        # 远程模式：从 GitHub 下载
+        if [[ ! -d /tmp/site_manager ]]; then
+            log_info "下载 CLI 工具..."
+            cd /tmp
+            git clone --depth 1 "https://github.com/$GITHUB_REPO.git" site_manager 2>/dev/null || true
+        fi
 
-    # 安装 CLI（无论是预编译还是源码编译都执行）
-    if [[ -d /tmp/site_manager ]]; then
-        cp -r /tmp/site_manager/bin "$BASE_DIR/"
-        cp -r /tmp/site_manager/lib "$BASE_DIR/"
-        cp -r /tmp/site_manager/config "$BASE_DIR/"
+        if [[ -d /tmp/site_manager ]]; then
+            cp -r /tmp/site_manager/bin "$BASE_DIR/"
+            cp -r /tmp/site_manager/lib "$BASE_DIR/"
+            cp -r /tmp/site_manager/config "$BASE_DIR/"
 
-        # 更新配置中的 BASE_DIR
-        sed -i "s|BASE_DIR=.*|BASE_DIR=\"$BASE_DIR\"|" "$BASE_DIR/config/site_manager.conf"
+            # 更新配置中的 BASE_DIR
+            sed -i "s|BASE_DIR=.*|BASE_DIR=\"$BASE_DIR\"|" "$BASE_DIR/config/site_manager.conf"
 
-        ln -sf "$BASE_DIR/bin/site" /usr/local/bin/site
-        ln -sf "$BASE_DIR/bin/sm" /usr/local/bin/sm
-        chmod +x "$BASE_DIR/bin/sm"
-        chmod +x "$BASE_DIR/bin/site"
+            ln -sf "$BASE_DIR/bin/site" /usr/local/bin/site
+            chmod +x "$BASE_DIR/bin/site"
+            if [[ -f "$BASE_DIR/bin/backup_cron.sh" ]]; then
+                chmod +x "$BASE_DIR/bin/backup_cron.sh"
+            fi
+        fi
     fi
 
     # 创建 systemd 服务
@@ -623,7 +760,7 @@ finish_install() {
     echo -e "${GREEN}║${NC}  密  码: ${YELLOW}${ADMIN_PASS}${NC}                       ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
     if [[ -n "$MYSQL_ROOT_PASS" ]]; then
-    echo -e "${GREEN}║${NC}  MySQL root 密码: ${YELLOW}${MYSQL_ROOT_PASS}${NC}           ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  MariaDB root 密码: ${YELLOW}${MYSQL_ROOT_PASS}${NC}         ${GREEN}║${NC}"
     echo -e "${GREEN}║${NC}                                                           ${GREEN}║${NC}"
     fi
     echo -e "${GREEN}╠═══════════════════════════════════════════════════════════╣${NC}"
@@ -643,7 +780,7 @@ Site Manager 安装信息
 Web 面板: 默认未启动，需要时执行 sm 1
 用户名: ${ADMIN_USER}
 密码: ${ADMIN_PASS}
-$([ -n "$MYSQL_ROOT_PASS" ] && echo "MySQL root 密码: ${MYSQL_ROOT_PASS}")
+$([ -n "$MYSQL_ROOT_PASS" ] && echo "MariaDB root 密码: ${MYSQL_ROOT_PASS}")
 
 请妥善保管此文件！
 EOF
@@ -657,10 +794,89 @@ EOF
 }
 
 #---------------------------------------
+# 快速设置（仅配置 CLI 工具）
+#---------------------------------------
+setup_cli_only() {
+    print_banner
+    echo ""
+    log_info "快速设置模式：仅配置 CLI 工具"
+    echo ""
+
+    if ! $LOCAL_MODE; then
+        log_error "快速设置仅支持从源码目录运行"
+        log_info "请先克隆项目: git clone https://github.com/$GITHUB_REPO.git"
+        exit 1
+    fi
+
+    # 检查 root 权限
+    if [[ $EUID -ne 0 ]]; then
+        log_error "请使用 root 用户运行此脚本"
+        exit 1
+    fi
+
+    # 创建符号链接
+    ln -sf "$SCRIPT_DIR/bin/site" /usr/local/bin/site
+    chmod +x "$SCRIPT_DIR/bin/site"
+    if [[ -f "$SCRIPT_DIR/bin/backup_cron.sh" ]]; then
+        chmod +x "$SCRIPT_DIR/bin/backup_cron.sh"
+    fi
+
+    echo ""
+    log_success "CLI 工具配置完成！"
+    log_success "符号链接: $SCRIPT_DIR/bin/site -> /usr/local/bin/site"
+    echo ""
+    log_info "现在可以使用 'site' 命令管理站点"
+    log_info "运行 'site --help' 查看帮助"
+    echo ""
+}
+
+#---------------------------------------
+# 显示帮助
+#---------------------------------------
+show_help() {
+    echo "Site Manager 安装脚本 v$VERSION"
+    echo ""
+    echo "用法: $0 [选项]"
+    echo ""
+    echo "选项:"
+    echo "  --setup     快速设置，仅配置 CLI 工具（需从源码目录运行）"
+    echo "  --help      显示此帮助信息"
+    echo ""
+    echo "完整安装:"
+    echo "  $0          交互式完整安装（Nginx/PHP/MySQL 等）"
+    echo ""
+    echo "示例:"
+    echo "  git clone https://github.com/$GITHUB_REPO.git /opt/site_manager"
+    echo "  cd /opt/site_manager && bash install.sh --setup"
+    echo ""
+}
+
+#---------------------------------------
 # 主流程
 #---------------------------------------
 main() {
+    # 解析命令行参数
+    case "${1:-}" in
+        --setup)
+            setup_cli_only
+            exit 0
+            ;;
+        --help|-h)
+            show_help
+            exit 0
+            ;;
+    esac
+
     print_banner
+
+    # 本地模式提示
+    if $LOCAL_MODE; then
+        echo ""
+        log_info "检测到本地源码目录: $SCRIPT_DIR"
+        log_info "提示: 使用 '$0 --setup' 可快速配置 CLI 工具（跳过软件安装）"
+        echo ""
+    fi
+
     check_system
     choose_directory
     choose_software
@@ -676,6 +892,9 @@ main() {
     install_php
     install_database
     install_redis
+    install_supervisor
+    install_docker
+    install_python
     install_panel
 
     finish_install

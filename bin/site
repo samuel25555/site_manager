@@ -28,6 +28,89 @@ NGINX_ENABLED_DIR="${NGINX_ENABLED_DIR:-/etc/nginx/sites-enabled}"
 SITES_DIR="${SITES_DIR:-/www/wwwroot}"
 LOGS_DIR="${LOGS_DIR:-/www/wwwlogs}"
 
+# 检查/创建 www 用户和组
+ensure_www_user() {
+    if ! getent group www >/dev/null 2>&1; then
+        groupadd www || { echo -e "${RED}创建 www 组失败${NC}"; return 1; }
+    fi
+    if ! getent passwd www >/dev/null 2>&1; then
+        useradd -g www -s /sbin/nologin -M www || { echo -e "${RED}创建 www 用户失败${NC}"; return 1; }
+    fi
+    return 0
+}
+
+# 验证域名格式
+validate_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        echo -e "${RED}无效的域名格式: $domain${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# 获取 MySQL 连接参数
+get_mysql_args() {
+    local args=""
+    if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASS" ]; then
+        args="-u$MYSQL_USER -p$MYSQL_PASS"
+    elif [ -f "${MYSQL_DEFAULTS_FILE:-/www/server/panel/data/default.pl}" ]; then
+        local pass=$(cat "${MYSQL_DEFAULTS_FILE:-/www/server/panel/data/default.pl}" 2>/dev/null)
+        [ -n "$pass" ] && args="-uroot -p$pass"
+    fi
+    echo "$args"
+}
+
+# 执行 MySQL 命令 (带错误处理)
+mysql_exec() {
+    local args=$(get_mysql_args)
+    mysql $args "$@" 2>/dev/null
+}
+
+# 执行 mysqldump (带错误处理)
+mysqldump_exec() {
+    local args=$(get_mysql_args)
+    local db="$1"
+    local output="$2"
+
+    if ! mysqldump $args --single-transaction --quick "$db" > "$output" 2>/dev/null; then
+        echo -e "${RED}备份失败: $db${NC}"
+        rm -f "$output"
+        return 1
+    fi
+
+    # 检查输出文件是否有效
+    if [ ! -s "$output" ]; then
+        echo -e "${RED}备份文件为空: $db${NC}"
+        rm -f "$output"
+        return 1
+    fi
+
+    return 0
+}
+
+# 安全的 nginx 配置测试和重载
+nginx_safe_reload() {
+    local rollback_files=("$@")
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        return 0
+    else
+        echo -e "${RED}Nginx 配置测试失败，正在回滚...${NC}"
+        nginx -t 2>&1 | head -5
+
+        # 回滚：删除刚创建的配置文件
+        for f in "${rollback_files[@]}"; do
+            [ -f "$f" ] && rm -f "$f"
+            [ -L "$f" ] && rm -f "$f"
+        done
+
+        echo -e "${YELLOW}已回滚配置更改${NC}"
+        return 1
+    fi
+}
+
 # 自动检测已安装的 PHP-FPM 版本
 detect_php_fpm() {
     local php_sock=""
@@ -189,7 +272,13 @@ _do_site_create() {
     local domain="$1"
     local type="$2"
     local php_version="$3"
-    
+
+    # 验证域名格式
+    validate_domain "$domain" || return 1
+
+    # 确保 www 用户存在
+    ensure_www_user || return 1
+
     local site_path="$SITES_DIR/$domain"
     local conf_path="$NGINX_CONF_DIR/$domain"
 
@@ -264,32 +353,198 @@ NGINX
     fi
 
     ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
-    nginx -t && systemctl reload nginx
-    echo -e "${GREEN}站点 $domain 创建成功 (${type}${php_version:+ $php_version})${NC}"
+
+    # 安全测试并重载，失败时回滚
+    if nginx_safe_reload "$conf_path" "$NGINX_ENABLED_DIR/$domain"; then
+        echo -e "${GREEN}站点 $domain 创建成功 (${type}${php_version:+ $php_version})${NC}"
+    else
+        # 清理站点目录
+        [ -d "$site_path" ] && rm -rf "$site_path"
+        echo -e "${RED}站点创建失败${NC}"
+        return 1
+    fi
 }
+# 内部删除函数 - 可被 CLI 和交互式菜单调用
+# 用法: _do_site_delete <域名> <模式> [--yes]
+# 模式: config (仅配置), full (配置+文件), backup (备份后删除)
+_do_site_delete() {
+    local domain="$1"
+    local mode="$2"
+    local skip_confirm="$3"
+
+    validate_domain "$domain" || return 1
+
+    local conf_path="$NGINX_CONF_DIR/$domain"
+    local enabled_path="$NGINX_ENABLED_DIR/$domain"
+    local site_path="$SITES_DIR/$domain"
+
+    [ ! -f "$conf_path" ] && echo -e "${RED}站点不存在: $domain${NC}" && return 1
+
+    case "$mode" in
+        config)
+            # 仅删除配置
+            rm -f "$enabled_path" "$conf_path"
+            if nginx_safe_reload; then
+                echo -e "${GREEN}配置已删除 (文件保留在 $site_path)${NC}"
+            else
+                echo -e "${RED}Nginx 重载失败，配置已删除但可能需要手动处理${NC}"
+                return 1
+            fi
+            ;;
+        full)
+            # 删除配置和文件
+            if [ "$skip_confirm" != "--yes" ]; then
+                read -p "确认删除配置和所有文件? (输入 'yes' 确认): " confirm
+                [ "$confirm" != "yes" ] && echo "已取消" && return 0
+            fi
+            rm -f "$enabled_path" "$conf_path"
+            [ -d "$site_path" ] && rm -rf "$site_path"
+            rm -f "$LOGS_DIR/${domain}_access.log" "$LOGS_DIR/${domain}_error.log"
+            if nginx_safe_reload; then
+                echo -e "${GREEN}站点已完全删除: $domain${NC}"
+            else
+                echo -e "${RED}Nginx 重载失败，但文件已删除${NC}"
+                return 1
+            fi
+            ;;
+        backup)
+            # 备份后删除
+            local backup_file="$BACKUP_DIR/${domain}_$(date +%Y%m%d_%H%M%S).tar.gz"
+            mkdir -p "$BACKUP_DIR"
+            echo "正在备份..."
+            if [ -d "$site_path" ]; then
+                if tar -czf "$backup_file" -C "$(dirname "$site_path")" "$(basename "$site_path")" 2>/dev/null; then
+                    echo -e "${GREEN}备份成功: $backup_file${NC}"
+                else
+                    echo -e "${RED}备份失败，操作已取消${NC}"
+                    return 1
+                fi
+            fi
+            rm -f "$enabled_path" "$conf_path"
+            [ -d "$site_path" ] && rm -rf "$site_path"
+            rm -f "$LOGS_DIR/${domain}_access.log" "$LOGS_DIR/${domain}_error.log"
+            if nginx_safe_reload; then
+                echo -e "${GREEN}站点已删除: $domain${NC}"
+            else
+                echo -e "${RED}Nginx 重载失败，但备份和文件删除已完成${NC}"
+                return 1
+            fi
+            ;;
+        *)
+            echo -e "${RED}无效模式: $mode (支持: config, full, backup)${NC}"
+            return 1
+            ;;
+    esac
+}
+
+# 交互式删除 - 菜单调用
 site_delete() {
     site_list
     read -p "域名: " domain
     [ -z "$domain" ] && return
-    read -p "确认删除 $domain? (y/n): " c
-    [ "$c" != "y" ] && return
-    rm -f "$NGINX_ENABLED_DIR/$domain" "$NGINX_CONF_DIR/$domain"
-    systemctl reload nginx
-    echo -e "${GREEN}站点配置已删除 (文件保留在 $SITES_DIR/$domain)${NC}"
+
+    validate_domain "$domain" || return 1
+
+    local conf_path="$NGINX_CONF_DIR/$domain"
+    local site_path="$SITES_DIR/$domain"
+
+    [ ! -f "$conf_path" ] && echo -e "${RED}站点不存在${NC}" && return
+
+    echo ""
+    echo -e "${YELLOW}即将删除站点: $domain${NC}"
+    echo " 配置文件: $conf_path"
+    [ -d "$site_path" ] && echo " 站点目录: $site_path ($(du -sh "$site_path" 2>/dev/null | cut -f1))"
+    echo ""
+    echo " 1) 仅删除配置 (保留文件)"
+    echo " 2) 删除配置和站点文件"
+    echo " 3) 备份后删除全部"
+    echo " 0) 取消"
+    read -p "选择: " choice
+
+    case "$choice" in
+        1) _do_site_delete "$domain" "config";;
+        2) _do_site_delete "$domain" "full";;
+        3) _do_site_delete "$domain" "backup";;
+        *) echo "已取消";;
+    esac
 }
 
 site_enable() {
     local domain="$1"
+
+    # 验证域名格式
+    validate_domain "$domain" || return 1
+
+    # 检查配置文件是否存在
+    if [ ! -f "$NGINX_CONF_DIR/$domain" ]; then
+        echo -e "${RED}站点配置不存在: $NGINX_CONF_DIR/$domain${NC}"
+        return 1
+    fi
+
+    # 创建符号链接
     ln -sf "$NGINX_CONF_DIR/$domain" "$NGINX_ENABLED_DIR/$domain"
-    systemctl reload nginx
-    echo -e "${GREEN}$domain 已启用${NC}"
+
+    # 测试 nginx 配置
+    if ! nginx -t 2>/dev/null; then
+        echo -e "${RED}Nginx 配置测试失败，正在回滚...${NC}"
+        nginx -t 2>&1 | head -5
+        rm -f "$NGINX_ENABLED_DIR/$domain"
+        echo -e "${YELLOW}已移除符号链接，请检查站点配置${NC}"
+        return 1
+    fi
+
+    # 重载 nginx
+    if systemctl reload nginx; then
+        echo -e "${GREEN}$domain 已启用${NC}"
+    else
+        echo -e "${RED}Nginx 重载失败${NC}"
+        rm -f "$NGINX_ENABLED_DIR/$domain"
+        return 1
+    fi
 }
 
 site_disable() {
     local domain="$1"
+    local link_target=""
+
+    # 验证域名格式
+    validate_domain "$domain" || return 1
+
+    # 检查符号链接是否存在
+    if [ ! -L "$NGINX_ENABLED_DIR/$domain" ]; then
+        echo -e "${YELLOW}站点未启用或链接不存在${NC}"
+        return 0
+    fi
+
+    # 保存原链接目标以便回滚
+    link_target=$(readlink -f "$NGINX_ENABLED_DIR/$domain" 2>/dev/null)
+
+    # 移除符号链接
     rm -f "$NGINX_ENABLED_DIR/$domain"
-    systemctl reload nginx
-    echo -e "${GREEN}$domain 已禁用${NC}"
+
+    # 测试 nginx 配置
+    if ! nginx -t 2>/dev/null; then
+        echo -e "${RED}Nginx 配置测试失败，正在回滚...${NC}"
+        nginx -t 2>&1 | head -5
+        # 恢复符号链接
+        if [ -n "$link_target" ] && [ -f "$link_target" ]; then
+            ln -sf "$link_target" "$NGINX_ENABLED_DIR/$domain"
+            echo -e "${YELLOW}已恢复符号链接，请检查 Nginx 配置${NC}"
+        fi
+        return 1
+    fi
+
+    # 重载 nginx
+    if systemctl reload nginx; then
+        echo -e "${GREEN}$domain 已禁用${NC}"
+    else
+        echo -e "${RED}Nginx 重载失败${NC}"
+        # 恢复符号链接
+        if [ -n "$link_target" ] && [ -f "$link_target" ]; then
+            ln -sf "$link_target" "$NGINX_ENABLED_DIR/$domain"
+        fi
+        return 1
+    fi
 }
 
 site_info() {
@@ -305,14 +560,7 @@ site_info() {
     echo ""
 }
 
-ssl_request() {
-    local domain="$1"
-    certbot certonly --nginx -d "$domain" --non-interactive --agree-tos --register-unsafely-without-email 2>&1
-}
-
-ssl_renew() {
-    certbot renew
-}
+# SSL 函数已移至 lib/ssl.sh
 
 # ================== 软件管理 ==================
 # ================== 软件管理 ==================
@@ -491,12 +739,27 @@ upload_to_ftp() {
 cleanup_backups() {
     local pattern="$1"
     local keep="${BACKUP_KEEP:-7}"
-    
+
+    # 安全检查：确保 pattern 不为空
+    [ -z "$pattern" ] && return 1
+
+    # 安全检查：确保 BACKUP_DIR 存在且不为空
+    [ -z "$BACKUP_DIR" ] && return 1
+    [ ! -d "$BACKUP_DIR" ] && return 0
+
     # 本地清理
-    local count=$(ls -1 $BACKUP_DIR/${pattern}* 2>/dev/null | wc -l)
+    local files=()
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(find "$BACKUP_DIR" -maxdepth 1 -name "${pattern}*" -type f -print0 2>/dev/null | sort -z -r)
+
+    local count=${#files[@]}
     if [ "$count" -gt "$keep" ]; then
-        ls -1t $BACKUP_DIR/${pattern}* 2>/dev/null | tail -n +$((keep+1)) | xargs rm -f
-        echo -e "${CYAN}已清理旧备份，保留最新 $keep 份${NC}"
+        local deleted=0
+        for ((i=keep; i<count; i++)); do
+            rm -f "${files[$i]}" && ((deleted++))
+        done
+        [ "$deleted" -gt 0 ] && echo -e "${CYAN}已清理 $deleted 个旧备份，保留最新 $keep 份${NC}"
     fi
 }
 
@@ -523,25 +786,58 @@ backup_site() {
     read -p "编号: " n
     
     mkdir -p "$BACKUP_DIR"
-    
+
+    # 检查磁盘空间 (至少保留 500MB)
+    local avail=$(df -m "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+    if [ -n "$avail" ] && [ "$avail" -lt 500 ]; then
+        echo -e "${RED}磁盘空间不足 (剩余 ${avail}MB)，请先清理${NC}"
+        return 1
+    fi
+
     if [ "$n" = "a" ]; then
+        local success=0 fail=0
         for d in "${sites[@]}"; do
             local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
-            tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null && echo -e "${GREEN}备份: $d${NC}"
-            upload_to_ftp "$file"
-            cleanup_backups "${d}_"
+            if [ ! -d "$SITES_DIR/$d" ]; then
+                echo -e "${YELLOW}跳过: $d (目录不存在)${NC}"
+                ((fail++))
+                continue
+            fi
+            if tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null; then
+                echo -e "${GREEN}备份成功: $d ($(du -h "$file" | cut -f1))${NC}"
+                upload_to_ftp "$file"
+                cleanup_backups "${d}_"
+                ((success++))
+            else
+                echo -e "${RED}备份失败: $d${NC}"
+                rm -f "$file"
+                ((fail++))
+            fi
         done
+        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
         return
     fi
-    
+
     if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#sites[@]} ] && echo -e "${RED}无效编号${NC}" && return
-    
+
     local d="${sites[$((n-1))]}"
     local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
-    tar -czf "$file" -C "$SITES_DIR" "$d" && echo -e "${GREEN}备份成功: $file${NC}"
-    upload_to_ftp "$file"
-    cleanup_backups "${d}_"
+
+    if [ ! -d "$SITES_DIR/$d" ]; then
+        echo -e "${RED}站点目录不存在: $SITES_DIR/$d${NC}"
+        return 1
+    fi
+
+    if tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null; then
+        echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
+        upload_to_ftp "$file"
+        cleanup_backups "${d}_"
+    else
+        echo -e "${RED}备份失败${NC}"
+        rm -f "$file"
+        return 1
+    fi
 }
 
 restore_site() {
@@ -580,63 +876,78 @@ backup_db() {
         dbs+=("$db")
         printf " %2d) %s\n" $i "$db"
         ((i++))
-    done < <(mysql -N -e "SHOW DATABASES;" 2>/dev/null)
-    
-    [ ${#dbs[@]} -eq 0 ] && echo "无数据库" && return
+    done < <(mysql_exec -N -e "SHOW DATABASES;")
+
+    [ ${#dbs[@]} -eq 0 ] && echo -e "${RED}无数据库或无法连接 MySQL${NC}" && return
     echo "  a) 备份全部"
     echo "  0) 返回"
     echo ""
     read -p "编号: " n
-    
+
     mkdir -p "$BACKUP_DIR"
-    
+
     if [ "$n" = "a" ]; then
+        local success=0 fail=0
         for db in "${dbs[@]}"; do
             local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
-            mysqldump "$db" > "$file" 2>/dev/null && echo -e "${GREEN}备份: $db${NC}"
-            upload_to_ftp "$file"
-            cleanup_backups "${db}_"
+            if mysqldump_exec "$db" "$file"; then
+                echo -e "${GREEN}备份成功: $db${NC}"
+                upload_to_ftp "$file"
+                cleanup_backups "${db}_"
+                ((success++))
+            else
+                ((fail++))
+            fi
         done
+        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
         return
     fi
-    
+
     if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#dbs[@]} ] && echo -e "${RED}无效编号${NC}" && return
-    
+
     local db="${dbs[$((n-1))]}"
     local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
-    mysqldump "$db" > "$file" 2>/dev/null && echo -e "${GREEN}备份成功: $file${NC}"
-    upload_to_ftp "$file"
-    cleanup_backups "${db}_"
+    if mysqldump_exec "$db" "$file"; then
+        echo -e "${GREEN}备份成功: $file${NC}"
+        upload_to_ftp "$file"
+        cleanup_backups "${db}_"
+    fi
 }
 
 restore_db() {
     echo ""
     echo -e "${CYAN}选择要恢复的备份:${NC}"
-    
+
     local i=1
     local files=()
     for f in $BACKUP_DIR/*.sql; do
         [ -f "$f" ] || continue
         files+=("$f")
-        printf " %2d) %s\n" $i "$(basename "$f")"
+        printf " %2d) %s ($(du -h "$f" | cut -f1))\n" $i "$(basename "$f")"
         ((i++))
     done
-    
+
     [ ${#files[@]} -eq 0 ] && echo "无SQL备份" && return
     echo "  0) 返回"
     echo ""
     read -p "编号: " n
-    
+
     if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
-    
+
     local f="${files[$((n-1))]}"
     local dbname=$(basename "$f" .sql | sed 's/_[0-9]*$//' | sed 's/_[0-9]*$//')
     read -p "数据库名 [$dbname]: " input_db
     dbname="${input_db:-$dbname}"
-    
-    mysql "$dbname" < "$f" 2>/dev/null && echo -e "${GREEN}恢复成功${NC}" || echo -e "${RED}恢复失败${NC}"
+
+    echo "正在恢复..."
+    if mysql_exec "$dbname" < "$f"; then
+        echo -e "${GREEN}恢复成功: $dbname${NC}"
+    else
+        echo -e "${RED}恢复失败，请检查数据库是否存在或凭据是否正确${NC}"
+        return 1
+    fi
 }
 
 list_backups() {
@@ -869,13 +1180,16 @@ show_help() {
     echo "站点管理:"
     echo "  site list               查看所有站点"
     echo "  site create <域名> <类型>  创建站点 (php73/php80/php83/static/proxy)"
-    echo "  site delete <域名>      删除站点"
+    echo "  site delete <域名> [--config|--full|--backup]  删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
     echo "  site info <域名>        站点详情"
     echo ""
     echo "SSL证书:"
-    echo "  site ssl <域名>         申请SSL证书"
+    echo "  site ssl config         配置 Cloudflare DNS API"
+    echo "  site ssl <域名>         申请SSL证书 (HTTP验证)"
+    echo "  site ssl <域名> --dns   申请SSL证书 (DNS验证)"
+    echo "  site ssl <域名> --wildcard  申请泛域名证书"
     echo "  site ssl renew          续期所有证书"
     echo ""
     echo "备份恢复:"
@@ -927,21 +1241,100 @@ handle_cli() {
             fi
             _do_site_create "$domain" "$type" "$php_version"
         } || echo "用法: site create <域名> <类型> (php73/php80/php81/php83/static/proxy)";;
-        delete) [ -n "$2" ] && { rm -f "$NGINX_ENABLED_DIR/$2" "$NGINX_CONF_DIR/$2"; systemctl reload nginx; echo "已删除"; } || echo "用法: site delete <域名>";;
+        delete)
+            if [ -z "$2" ]; then
+                echo "用法: site delete <域名> [选项]"
+                echo "选项:"
+                echo "  --config     仅删除配置 (保留文件)"
+                echo "  --full       删除配置和站点文件 (需确认)"
+                echo "  --full --yes 删除配置和站点文件 (跳过确认)"
+                echo "  --backup     备份后删除全部"
+                echo "  (无选项)     仅删除配置 (需确认)"
+            else
+                local mode="config"
+                local skip_confirm=""
+                case "$3" in
+                    --config) mode="config";;
+                    --full) mode="full"; [ "$4" = "--yes" ] && skip_confirm="--yes";;
+                    --backup) mode="backup";;
+                    --yes) mode="config";;  # 仅 --yes 时默认 config 模式
+                    "")
+                        # 无选项时交互确认后删除配置
+                        validate_domain "$2" || exit 1
+                        [ ! -f "$NGINX_CONF_DIR/$2" ] && echo -e "${RED}站点不存在${NC}" && exit 1
+                        read -p "确认删除 $2 的配置? (y/n): " c
+                        [ "$c" != "y" ] && echo "已取消" && exit 0
+                        mode="config"
+                        ;;
+                    *)
+                        echo -e "${RED}无效选项: $3${NC}"
+                        exit 1
+                        ;;
+                esac
+                _do_site_delete "$2" "$mode" "$skip_confirm" || exit 1
+            fi
+            ;;
         enable) [ -n "$2" ] && site_enable "$2" || echo "用法: site enable <域名>";;
         disable) [ -n "$2" ] && site_disable "$2" || echo "用法: site disable <域名>";;
         info) [ -n "$2" ] && site_info "$2" || echo "用法: site info <域名>";;
-        ssl) [ "$2" = "renew" ] && ssl_renew || ([ -n "$2" ] && ssl_request "$2" || echo "用法: site ssl <域名>");;
-        backup) [ -n "$2" ] && { mkdir -p "$BACKUP_DIR"; tar -czf "$BACKUP_DIR/${2}_$(date +%Y%m%d_%H%M%S).tar.gz" -C "$SITES_DIR" "$2" && echo "备份成功"; } || echo "用法: site backup <域名>";;
-        restore) [ -n "$2" ] && [ -n "$3" ] && tar -xzf "$3" -C "$SITES_DIR" || echo "用法: site restore <域名> <文件>";;
+        ssl) source /opt/site_manager/lib/ssl.sh 2>/dev/null || source "$SCRIPT_DIR/../lib/ssl.sh"
+            case "$2" in
+                config) ssl_dns_config "$3" "$4";;
+                install) ssl_install;;
+                renew) ssl_renew;;
+                "") echo "用法: site ssl <域名> [--dns] [--wildcard]";;
+                *) ssl_request "$2" "${@:3}";;
+            esac;;
+        backup)
+            if [ -z "$2" ]; then
+                echo "用法: site backup <域名>"
+            else
+                mkdir -p "$BACKUP_DIR"
+                # 检查磁盘空间
+                local avail=$(df -m "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+                if [ -n "$avail" ] && [ "$avail" -lt 500 ]; then
+                    echo -e "${RED}磁盘空间不足 (剩余 ${avail}MB)${NC}"
+                    exit 1
+                fi
+                if [ ! -d "$SITES_DIR/$2" ]; then
+                    echo -e "${RED}站点目录不存在: $SITES_DIR/$2${NC}"
+                    exit 1
+                fi
+                local file="$BACKUP_DIR/${2}_$(date +%Y%m%d_%H%M%S).tar.gz"
+                if tar -czf "$file" -C "$SITES_DIR" "$2" 2>/dev/null; then
+                    echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
+                    cleanup_backups "${2}_"
+                else
+                    echo -e "${RED}备份失败${NC}"
+                    rm -f "$file"
+                    exit 1
+                fi
+            fi
+            ;;
+        restore)
+            if [ -z "$2" ] || [ -z "$3" ]; then
+                echo "用法: site restore <域名> <备份文件>"
+            elif [ ! -f "$3" ]; then
+                echo -e "${RED}备份文件不存在: $3${NC}"
+                exit 1
+            else
+                if tar -xzf "$3" -C "$SITES_DIR" 2>/dev/null; then
+                    chown -R www:www "$SITES_DIR/$2" 2>/dev/null
+                    echo -e "${GREEN}恢复成功${NC}"
+                else
+                    echo -e "${RED}恢复失败${NC}"
+                    exit 1
+                fi
+            fi
+            ;;
         db) source /opt/site_manager/lib/db.sh; case "$2" in
                 create) db_create "$3";;
                 drop) db_drop "$3";;
                 import) db_import "$3" "$4";;
                 export) db_export "$3";;
                 list) db_list;;
-                backup) mkdir -p "$BACKUP_DIR"; [ -n "$3" ] && mysqldump "$3" > "$BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql" || mysqldump --all-databases > "$BACKUP_DIR/all_$(date +%Y%m%d_%H%M%S).sql"; echo "备份成功";;
-                restore) [ -n "$3" ] && [ -n "$4" ] && mysql "$3" < "$4" && echo "恢复成功" || echo "用法: site db restore <库> <文件>";;
+                backup) mkdir -p "$BACKUP_DIR"; if [ -n "$3" ]; then mysqldump_exec "$3" "$BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql" && echo "备份成功"; else echo "用法: site db backup <数据库名>"; fi;;
+                restore) if [ -n "$3" ] && [ -n "$4" ] && [ -f "$4" ]; then mysql_exec "$3" < "$4" && echo "恢复成功" || echo -e "${RED}恢复失败${NC}"; else echo "用法: site db restore <库> <文件>"; fi;;
                 *) echo "用法: site db <create|drop|import|export|list|backup|restore>";;
             esac;;
         nginx) case "$2" in reload)systemctl reload nginx;; restart)systemctl restart nginx;; status)systemctl status nginx --no-pager;; *)systemctl reload nginx;; esac;;
