@@ -111,6 +111,129 @@ nginx_safe_reload() {
     fi
 }
 
+# ================== 伪静态管理 ==================
+NGINX_REWRITE_DIR="${NGINX_REWRITE_DIR:-/srv/vhost/rewrite}"
+REWRITE_TEMPLATES_DIR="${REWRITE_TEMPLATES_DIR:-/opt/site_manager/config/rewrite}"
+
+# 列出可用的伪静态规则
+list_rewrite_rules() {
+    echo ""
+    echo -e "${CYAN}可用的伪静态规则:${NC}"
+    for f in "$REWRITE_TEMPLATES_DIR"/*.conf; do
+        [ -f "$f" ] || continue
+        local name=$(basename "$f" .conf)
+        local desc=$(head -1 "$f" | sed 's/^# //')
+        printf "  %-12s %s\n" "$name" "$desc"
+    done
+    echo ""
+}
+
+# 获取站点当前伪静态规则
+get_site_rewrite() {
+    local domain="$1"
+    local rewrite_file="$NGINX_REWRITE_DIR/$domain.conf"
+
+    if [ -f "$rewrite_file" ]; then
+        # 读取规则类型注释
+        local rule=$(head -1 "$rewrite_file" | sed 's/^# //' | sed 's/ 伪静态规则//')
+        echo "$rule"
+    else
+        echo "无"
+    fi
+}
+
+# 设置站点伪静态规则
+set_site_rewrite() {
+    local domain="$1"
+    local rule="$2"
+
+    validate_domain "$domain" || return 1
+
+    local conf_path="$NGINX_CONF_DIR/$domain"
+    [ ! -f "$conf_path" ] && echo -e "${RED}站点不存在: $domain${NC}" && return 1
+
+    mkdir -p "$NGINX_REWRITE_DIR"
+
+    local template="$REWRITE_TEMPLATES_DIR/${rule}.conf"
+    local rewrite_file="$NGINX_REWRITE_DIR/$domain.conf"
+
+    if [ ! -f "$template" ]; then
+        echo -e "${RED}伪静态规则不存在: $rule${NC}"
+        list_rewrite_rules
+        return 1
+    fi
+
+    # 备份原配置
+    cp "$conf_path" "$conf_path.bak"
+
+    # 移除已有的 location / 块 (硬编码的伪静态规则)
+    # 使用 sed 删除 location / { ... } 块
+    sed -i '/location \/ {/,/^    }/d' "$conf_path"
+
+    # 移除旧的 rewrite include 和注释
+    sed -i '/# 伪静态规则/d' "$conf_path"
+    sed -i "/include.*rewrite.*$domain/d" "$conf_path"
+
+    # 复制新规则
+    cp "$template" "$rewrite_file"
+
+    # 在最后一个 } 前添加 include
+    sed -i "/^}$/i\\    # 伪静态规则\\n    include $NGINX_REWRITE_DIR/$domain.conf;" "$conf_path"
+
+    # 测试配置
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        rm -f "$conf_path.bak"
+        echo -e "${GREEN}伪静态规则已设置: $domain -> $rule${NC}"
+    else
+        echo -e "${RED}Nginx 配置测试失败，正在回滚...${NC}"
+        nginx -t 2>&1 | head -5
+        mv "$conf_path.bak" "$conf_path"
+        rm -f "$rewrite_file"
+        return 1
+    fi
+}
+
+# 交互式设置伪静态
+rewrite_menu() {
+    local domain="$1"
+
+    if [ -z "$domain" ]; then
+        site_list
+        read -p "域名: " domain
+        [ -z "$domain" ] && return
+    fi
+
+    validate_domain "$domain" || return 1
+    [ ! -f "$NGINX_CONF_DIR/$domain" ] && echo -e "${RED}站点不存在${NC}" && return
+
+    local current=$(get_site_rewrite "$domain")
+    echo ""
+    echo -e "站点: ${CYAN}$domain${NC}"
+    echo -e "当前规则: ${YELLOW}$current${NC}"
+    echo ""
+
+    local i=1
+    local rules=()
+    for f in "$REWRITE_TEMPLATES_DIR"/*.conf; do
+        [ -f "$f" ] || continue
+        local name=$(basename "$f" .conf)
+        rules+=("$name")
+        local desc=$(head -1 "$f" | sed 's/^# //')
+        printf " %2d) %-12s %s\n" $i "$name" "$desc"
+        ((i++))
+    done
+    echo "  0) 返回"
+    echo ""
+    read -p "选择规则: " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -gt 0 ] && [ "$choice" -le ${#rules[@]} ]; then
+        set_site_rewrite "$domain" "${rules[$((choice-1))]}"
+    elif [ "$choice" != "0" ]; then
+        echo -e "${RED}无效选择${NC}"
+    fi
+}
+
 # 自动检测已安装的 PHP-FPM 版本
 detect_php_fpm() {
     local php_sock=""
@@ -1184,6 +1307,9 @@ show_help() {
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
     echo "  site info <域名>        站点详情"
+    echo "  site rewrite            查看可用伪静态规则"
+    echo "  site rewrite <域名>     设置站点伪静态 (交互式)"
+    echo "  site rewrite <域名> <规则>  设置站点伪静态"
     echo ""
     echo "SSL证书:"
     echo "  site ssl config         配置 Cloudflare DNS API"
@@ -1277,6 +1403,15 @@ handle_cli() {
         enable) [ -n "$2" ] && site_enable "$2" || echo "用法: site enable <域名>";;
         disable) [ -n "$2" ] && site_disable "$2" || echo "用法: site disable <域名>";;
         info) [ -n "$2" ] && site_info "$2" || echo "用法: site info <域名>";;
+        rewrite)
+            if [ -z "$2" ]; then
+                list_rewrite_rules
+            elif [ -z "$3" ]; then
+                rewrite_menu "$2"
+            else
+                set_site_rewrite "$2" "$3"
+            fi
+            ;;
         ssl) source /opt/site_manager/lib/ssl.sh 2>/dev/null || source "$SCRIPT_DIR/../lib/ssl.sh"
             case "$2" in
                 config) ssl_dns_config "$3" "$4";;
@@ -1337,10 +1472,26 @@ handle_cli() {
                 restore) if [ -n "$3" ] && [ -n "$4" ] && [ -f "$4" ]; then mysql_exec "$3" < "$4" && echo "恢复成功" || echo -e "${RED}恢复失败${NC}"; else echo "用法: site db restore <库> <文件>"; fi;;
                 *) echo "用法: site db <create|drop|import|export|list|backup|restore>";;
             esac;;
-        nginx) case "$2" in reload)systemctl reload nginx;; restart)systemctl restart nginx;; status)systemctl status nginx --no-pager;; *)systemctl reload nginx;; esac;;
-        php) [ "$2" = "restart" ] && for v in 7.4 8.0 8.1 8.2 8.3; do systemctl restart "php${v}-fpm" 2>/dev/null; done || php -v;;
-        mysql) case "$2" in restart)systemctl restart mysql;; status)systemctl status mysql --no-pager;; *)systemctl status mysql --no-pager;; esac;;
-        redis) case "$2" in restart)systemctl restart redis-server;; *)systemctl status redis-server --no-pager;; esac;;
+        nginx) case "$2" in
+            reload) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
+            restart) systemctl restart nginx && echo -e "${GREEN}Nginx 已重启${NC}" || echo -e "${RED}Nginx 重启失败${NC}";;
+            status) systemctl status nginx --no-pager;;
+            *) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
+            esac;;
+        php) case "$2" in
+            restart) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl restart "php${v}-fpm" 2>/dev/null && echo -e "${GREEN}PHP $v FPM 已重启${NC}"; done;;
+            status) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl is-active "php${v}-fpm" 2>/dev/null | grep -q active && echo "PHP $v FPM: 运行中"; done;;
+            *) php -v;;
+            esac;;
+        mysql) case "$2" in
+            restart) systemctl restart mysql && echo -e "${GREEN}MySQL 已重启${NC}" || systemctl restart mariadb && echo -e "${GREEN}MariaDB 已重启${NC}" || echo -e "${RED}数据库重启失败${NC}";;
+            status) systemctl status mysql --no-pager 2>/dev/null || systemctl status mariadb --no-pager;;
+            *) systemctl status mysql --no-pager 2>/dev/null || systemctl status mariadb --no-pager;;
+            esac;;
+        redis) case "$2" in
+            restart) systemctl restart redis-server && echo -e "${GREEN}Redis 已重启${NC}" || echo -e "${RED}Redis 重启失败${NC}";;
+            *) systemctl status redis-server --no-pager;;
+            esac;;
         firewall) case "$2" in
                 status) ufw status numbered;;
                 on) ufw --force enable;;
@@ -1351,7 +1502,7 @@ handle_cli() {
             esac;;
         soft) soft_list;;
         install) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" install "$3" || echo "未知软件: $2"; } || echo "用法: site install <软件> [版本]";;
-        uninstall) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" uninstall || echo "未知软件: $2"; } || echo "用法: site uninstall <软件>";;
+        uninstall) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" uninstall "$3" || echo "未知软件: $2"; } || echo "用法: site uninstall <软件> [版本]";;
         panel) case "$2" in start)panel_start;; stop)panel_stop;; restart)panel_stop;sleep 1;panel_start;; *)panel_menu;; esac;;
         help|--help|-h) show_help;;
         *) show_help;;

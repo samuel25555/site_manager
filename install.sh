@@ -377,6 +377,10 @@ install_nginx() {
         sed -i "/http {/a\\    include $BASE_DIR/vhost/nginx/*.conf;" /etc/nginx/nginx.conf
     fi
 
+    # 配置 TLS 安全默认值 (仅 TLSv1.2 和 TLSv1.3)
+    sed -i 's/ssl_protocols TLSv1 TLSv1.1 TLSv1.2 TLSv1.3;/ssl_protocols TLSv1.2 TLSv1.3;/' /etc/nginx/nginx.conf
+    sed -i 's/ssl_protocols TLSv1 TLSv1.1 TLSv1.2;/ssl_protocols TLSv1.2 TLSv1.3;/' /etc/nginx/nginx.conf
+
     systemctl enable nginx
     systemctl restart nginx
 
