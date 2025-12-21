@@ -15,7 +15,7 @@ db_create() {
     
     log_info "创建数据库: $name"
     
-    mysql -u root << EOF
+    mysql $(get_mysql_args) << EOF
 CREATE DATABASE IF NOT EXISTS \`$name\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '$name'@'localhost' IDENTIFIED BY '$password';
 GRANT ALL PRIVILEGES ON \`$name\`.* TO '$name'@'localhost';
@@ -53,7 +53,7 @@ db_drop() {
     
     log_info "删除数据库: $name"
     
-    mysql -u root << EOF
+    mysql $(get_mysql_args) << EOF
 DROP DATABASE IF EXISTS \`$name\`;
 DROP USER IF EXISTS '$name'@'localhost';
 FLUSH PRIVILEGES;
@@ -86,9 +86,9 @@ db_import() {
     log_info "导入数据库: $name <- $file"
     
     if [[ "$file" == *.gz ]]; then
-        gunzip -c "$file" | mysql -u root "$name"
+        gunzip -c "$file" | mysql $(get_mysql_args) "$name"
     else
-        mysql -u root "$name" < "$file"
+        mysql $(get_mysql_args) "$name" < "$file"
     fi
     
     if [ $? -eq 0 ]; then
@@ -116,7 +116,7 @@ db_export() {
     
     log_info "导出数据库: $name -> $file"
     
-    mysqldump -u root "$name" | gzip > "$file"
+    mysqldump $(get_mysql_args) "$name" | gzip > "$file"
     
     if [ $? -eq 0 ]; then
         log_success "数据库导出成功: $file"
@@ -131,7 +131,7 @@ db_list() {
     echo ""
     echo "数据库列表:"
     echo "-----------------------------------"
-    mysql -u root -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(Database|information_schema|performance_schema|mysql|sys)$"
+    mysql $(get_mysql_args) -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(Database|information_schema|performance_schema|mysql|sys)$"
     echo ""
 }
 
@@ -145,12 +145,12 @@ db_backup_all() {
     
     log_info "备份所有数据库..."
     
-    local databases=$(mysql -u root -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
+    local databases=$(mysql $(get_mysql_args) -N -e "SHOW DATABASES;" 2>/dev/null | grep -v -E "^(information_schema|performance_schema|mysql|sys)$")
     
     local count=0
     for db in $databases; do
         local file="$backup_dir/${db}_${timestamp}.sql.gz"
-        mysqldump -u root "$db" 2>/dev/null | gzip > "$file"
+        mysqldump $(get_mysql_args) "$db" 2>/dev/null | gzip > "$file"
         if [ $? -eq 0 ]; then
             log_success "  $db -> $file"
             ((count++))
