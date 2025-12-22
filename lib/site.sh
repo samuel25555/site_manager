@@ -11,7 +11,7 @@ site_create() {
     
     if [ -z "$domain" ] || [ -z "$type" ]; then
         log_error "用法: site create <domain> <type>"
-        log_info "类型: php|php:7.3|php:8.1|php:8.3|static|node|node:static|python|docker|proxy"
+        log_info "类型: php|php:7.3|php:8.1|php:8.3|static|node|node:static|pm2|python|docker|proxy"
         return 1
     fi
     
@@ -61,12 +61,17 @@ site_create() {
         node:static)
             _create_static_site "$domain"
             ;;
+        pm2)
+            port="${port:-$(find_available_port 3000)}"
+            _create_pm2_site "$domain" "$port"
+            ;;
         python)
             port="${port:-$(find_available_port 8000)}"
             _create_python_site "$domain" "$port"
             ;;
         docker)
-            _create_docker_site "$domain"
+            port="${port:-$(find_available_port 3000)}"
+            _create_docker_site "$domain" "$port"
             ;;
         proxy)
             if [ -z "$target" ]; then
@@ -210,6 +215,89 @@ EOF
     log_info "Node.js 站点使用端口: $port"
 }
 
+# PM2 站点
+_create_pm2_site() {
+    local domain="$1"
+    local port="$2"
+
+    # 创建 Nginx 配置
+    cat > "$NGINX_CONF_DIR/$domain.conf" << EOF
+server {
+    listen 80;
+    server_name $domain;
+
+    access_log $LOGS_DIR/nginx/$domain.access.log;
+    error_log $LOGS_DIR/nginx/$domain.error.log;
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOF
+
+    # 创建 PM2 ecosystem 配置
+    cat > "$SITES_DIR/$domain/ecosystem.config.js" << EOF
+module.exports = {
+  apps: [{
+    name: '$domain',
+    script: 'server.js',
+    cwd: '$SITES_DIR/$domain',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '500M',
+    env: {
+      NODE_ENV: 'production',
+      PORT: $port
+    }
+  }]
+};
+EOF
+
+    # 创建示例 server.js
+    cat > "$SITES_DIR/$domain/server.js" << 'EOF'
+const http = require('http');
+const port = process.env.PORT || 3000;
+
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end('<h1>PM2 站点运行中</h1><p>请替换此文件为您的应用</p>');
+});
+
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
+EOF
+
+    # 启动 PM2 进程
+    if command -v pm2 &>/dev/null; then
+        # 配置 PM2 开机自启（仅首次）
+        if [ ! -f /etc/systemd/system/pm2-${WEB_USER}.service ]; then
+            log_info "配置 PM2 开机自启..."
+            local pm2_home
+            pm2_home=$(getent passwd "$WEB_USER" | cut -d: -f6)
+            [ -z "$pm2_home" ] || [ ! -d "$pm2_home" ] && pm2_home="/www"
+            pm2 startup systemd -u "$WEB_USER" --hp "$pm2_home" 2>/dev/null || true
+        fi
+
+        run_pm2 start "$SITES_DIR/$domain/ecosystem.config.js" 2>/dev/null || true
+        run_pm2 save 2>/dev/null || true
+    else
+        log_warn "PM2 未安装，请先安装: site install nodejs"
+    fi
+
+    log_info "PM2 站点使用端口: $port"
+    log_info "PM2 配置: $SITES_DIR/$domain/ecosystem.config.js"
+}
+
 # Python 站点
 _create_python_site() {
     local domain="$1"
@@ -262,18 +350,20 @@ EOF
 # Docker 站点
 _create_docker_site() {
     local domain="$1"
-    
+    local port="$2"
+
     mkdir -p "$DOCKER_DIR/$domain"
-    
+
     cat > "$DOCKER_DIR/$domain/docker-compose.yml" << EOF
-version: '3.8'
 services:
   app:
     build: .
     ports:
-      - "3000:3000"
+      - "$port:$port"
     volumes:
       - $SITES_DIR/$domain:/app
+    environment:
+      - PORT=$port
     restart: unless-stopped
 EOF
 
@@ -286,7 +376,7 @@ server {
     error_log $LOGS_DIR/nginx/$domain.error.log;
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$port;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -296,6 +386,7 @@ server {
 }
 EOF
 
+    log_info "Docker 站点使用端口: $port"
     log_info "Docker 配置: $DOCKER_DIR/$domain/docker-compose.yml"
 }
 
@@ -363,7 +454,13 @@ site_delete() {
         rm -f "$SUPERVISOR_CONF_DIR/$domain.conf"
         supervisor_reload
     fi
-    
+
+    # 清理 PM2 进程
+    if [ -f "$SITES_DIR/$domain/ecosystem.config.js" ]; then
+        run_pm2 delete "$domain" 2>/dev/null || true
+        run_pm2 save 2>/dev/null || true
+    fi
+
     if [ -d "$DOCKER_DIR/$domain" ]; then
         cd "$DOCKER_DIR/$domain" && docker-compose down 2>/dev/null || true
         rm -rf "$DOCKER_DIR/$domain"
@@ -402,9 +499,16 @@ site_enable() {
     if [ -f "$SUPERVISOR_CONF_DIR/$domain.conf" ]; then
         supervisorctl start "$domain" 2>/dev/null || true
     fi
-    
+
+    # 启动 PM2 进程
+    if [ -f "$SITES_DIR/$domain/ecosystem.config.js" ]; then
+        # 先尝试启动已存在的进程，失败则重新加载配置
+        run_pm2 start "$domain" 2>/dev/null || \
+        run_pm2 start "$SITES_DIR/$domain/ecosystem.config.js" 2>/dev/null || true
+    fi
+
     nginx_reload
-    
+
     log_success "站点 $domain 已启用"
 }
 
@@ -429,11 +533,16 @@ site_disable() {
     fi
     
     mv "$NGINX_CONF_DIR/$domain.conf" "$NGINX_CONF_DIR/$domain.conf.disabled"
-    
+
     if [ -f "$SUPERVISOR_CONF_DIR/$domain.conf" ]; then
         supervisorctl stop "$domain" 2>/dev/null || true
     fi
-    
+
+    # 停止 PM2 进程
+    if [ -f "$SITES_DIR/$domain/ecosystem.config.js" ]; then
+        run_pm2 stop "$domain" 2>/dev/null || true
+    fi
+
     nginx_reload
     
     log_success "站点 $domain 已禁用"
@@ -528,6 +637,27 @@ site_status() {
         if [ -d "$DOCKER_DIR/$domain" ]; then
             echo "Docker 状态:"
             cd "$DOCKER_DIR/$domain" && docker-compose ps 2>/dev/null || echo "  未运行"
+        fi
+
+        # PM2 状态
+        if [ -f "$SITES_DIR/$domain/ecosystem.config.js" ]; then
+            echo "PM2 状态:"
+            if command -v pm2 &>/dev/null; then
+                local pm2_info
+                pm2_info=$(run_pm2 jlist 2>/dev/null | grep -o "\"name\":\"$domain\"[^}]*" | head -1)
+                if [ -n "$pm2_info" ]; then
+                    local status=$(echo "$pm2_info" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
+                    local memory=$(run_pm2 describe "$domain" 2>/dev/null | grep "memory" | awk '{print $4}')
+                    local uptime=$(run_pm2 describe "$domain" 2>/dev/null | grep "uptime" | awk '{print $4}')
+                    echo "  状态: $status"
+                    [ -n "$memory" ] && echo "  内存: $memory"
+                    [ -n "$uptime" ] && echo "  运行: $uptime"
+                else
+                    echo "  未运行"
+                fi
+            else
+                echo "  PM2 未安装"
+            fi
         fi
     else
         echo ""

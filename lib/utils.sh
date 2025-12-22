@@ -6,6 +6,15 @@ command_exists() {
     command -v "$1" &> /dev/null
 }
 
+# 执行 PM2 命令 (自动处理用户和 HOME 目录)
+run_pm2() {
+    command -v pm2 &>/dev/null || return 1
+    local pm2_home
+    pm2_home=$(getent passwd "$WEB_USER" | cut -d: -f6)
+    [ -z "$pm2_home" ] || [ ! -d "$pm2_home" ] && pm2_home="/www"
+    sudo -u "$WEB_USER" HOME="$pm2_home" pm2 "$@"
+}
+
 # 检查是否 root
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -57,12 +66,16 @@ get_site_type() {
     if grep -q "fastcgi_pass" "$conf"; then
         echo "php"
     elif grep -q "proxy_pass" "$conf"; then
-        if [ -f "$SUPERVISOR_CONF_DIR/$domain.conf" ]; then
+        if [ -f "$SITES_DIR/$domain/ecosystem.config.js" ]; then
+            echo "pm2"
+        elif [ -f "$SUPERVISOR_CONF_DIR/$domain.conf" ]; then
             if grep -q "python\|uvicorn\|gunicorn" "$SUPERVISOR_CONF_DIR/$domain.conf"; then
                 echo "python"
             else
                 echo "node"
             fi
+        elif [ -f "$DOCKER_DIR/$domain/docker-compose.yml" ]; then
+            echo "docker"
         else
             echo "proxy"
         fi

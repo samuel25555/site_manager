@@ -809,9 +809,17 @@ service_menu() {
 # ================== 备份管理 ==================
 # ================== 备份配置 ==================
 BACKUP_CONF="/opt/site_manager/config/backup.conf"
+EXCLUDE_CONF="/opt/site_manager/config/backup_exclude.conf"
 [ -f "$BACKUP_CONF" ] && source "$BACKUP_CONF"
 BACKUP_DIR="${BACKUP_DIR:-/www/backup}"
 BACKUP_KEEP="${BACKUP_KEEP:-7}"
+DB_KEEP="${DB_KEEP:-51}"
+SITE_KEEP="${SITE_KEEP:-7}"
+
+# 备份子目录
+DB_BACKUP_DIR="$BACKUP_DIR/database"
+SITE_BACKUP_DIR="$BACKUP_DIR/site"
+PATH_BACKUP_DIR="$BACKUP_DIR/path"
 
 # ================== 备份管理 ==================
 backup_menu() {
@@ -836,18 +844,34 @@ backup_menu() {
     esac
 }
 
-# 上传到 FTP
+# 生成排除参数
+get_exclude_args() {
+    local args=""
+    if [ -f "$EXCLUDE_CONF" ]; then
+        while IFS= read -r line; do
+            [[ -z "$line" || "$line" =~ ^# ]] && continue
+            args="$args --exclude=$line"
+        done < "$EXCLUDE_CONF"
+    fi
+    echo "$args"
+}
+
+# 上传到 FTP (支持子目录)
 upload_to_ftp() {
     local file="$1"
+    local subdir="${2:-}"
     [ "$FTP_ENABLED" != "true" ] && return 0
     [ -z "$FTP_HOST" ] && return 0
-    
-    log_info "上传到 FTP: $(basename "$file")"
-    
-    curl -s -T "$file" "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/$(basename "$file")" \
+
+    local remote_path="${FTP_PATH}"
+    [ -n "$subdir" ] && remote_path="${FTP_PATH}/${subdir}"
+
+    echo -e "${CYAN}上传到 FTP: $(basename "$file")${NC}"
+
+    curl -s -T "$file" "ftp://${FTP_HOST}:${FTP_PORT}${remote_path}/$(basename "$file")" \
         --user "${FTP_USER}:${FTP_PASS}" \
         --ftp-create-dirs 2>/dev/null
-    
+
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}FTP上传成功${NC}"
         [ "$FTP_DELETE_LOCAL" = "true" ] && rm -f "$file" && echo "本地文件已删除"
@@ -859,22 +883,24 @@ upload_to_ftp() {
 }
 
 # 清理旧备份
+# 用法: cleanup_backups <pattern> [backup_dir] [keep_count]
 cleanup_backups() {
     local pattern="$1"
-    local keep="${BACKUP_KEEP:-7}"
+    local backup_dir="${2:-$BACKUP_DIR}"
+    local keep="${3:-${BACKUP_KEEP:-7}}"
 
     # 安全检查：确保 pattern 不为空
     [ -z "$pattern" ] && return 1
 
-    # 安全检查：确保 BACKUP_DIR 存在且不为空
-    [ -z "$BACKUP_DIR" ] && return 1
-    [ ! -d "$BACKUP_DIR" ] && return 0
+    # 安全检查：确保 backup_dir 存在且不为空
+    [ -z "$backup_dir" ] && return 1
+    [ ! -d "$backup_dir" ] && return 0
 
     # 本地清理
     local files=()
     while IFS= read -r -d '' f; do
         files+=("$f")
-    done < <(find "$BACKUP_DIR" -maxdepth 1 -name "${pattern}*" -type f -print0 2>/dev/null | sort -z -r)
+    done < <(find "$backup_dir" -maxdepth 1 -name "${pattern}*" -type f -print0 2>/dev/null | sort -z -r)
 
     local count=${#files[@]}
     if [ "$count" -gt "$keep" ]; then
@@ -889,7 +915,7 @@ cleanup_backups() {
 backup_site() {
     echo ""
     echo -e "${CYAN}选择要备份的站点:${NC}"
-    
+
     local i=1
     local sites=()
     for conf in "$NGINX_CONF_DIR"/*; do
@@ -901,35 +927,37 @@ backup_site() {
         printf " %2d) %s\n" $i "$domain"
         ((i++))
     done
-    
+
     [ ${#sites[@]} -eq 0 ] && echo "无站点" && return
     echo "  a) 备份全部"
     echo "  0) 返回"
     echo ""
     read -p "编号: " n
-    
-    mkdir -p "$BACKUP_DIR"
+
+    mkdir -p "$SITE_BACKUP_DIR"
 
     # 检查磁盘空间 (至少保留 500MB)
-    local avail=$(df -m "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+    local avail=$(df -m "$SITE_BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
     if [ -n "$avail" ] && [ "$avail" -lt 500 ]; then
         echo -e "${RED}磁盘空间不足 (剩余 ${avail}MB)，请先清理${NC}"
         return 1
     fi
 
+    local exclude_args=$(get_exclude_args)
+
     if [ "$n" = "a" ]; then
         local success=0 fail=0
         for d in "${sites[@]}"; do
-            local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+            local file="$SITE_BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
             if [ ! -d "$SITES_DIR/$d" ]; then
                 echo -e "${YELLOW}跳过: $d (目录不存在)${NC}"
                 ((fail++))
                 continue
             fi
-            if tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null; then
+            if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$d" 2>/dev/null; then
                 echo -e "${GREEN}备份成功: $d ($(du -h "$file" | cut -f1))${NC}"
-                upload_to_ftp "$file"
-                cleanup_backups "${d}_"
+                upload_to_ftp "$file" "site"
+                cleanup_backups "${d}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
                 ((success++))
             else
                 echo -e "${RED}备份失败: $d${NC}"
@@ -945,17 +973,17 @@ backup_site() {
     [ "$n" -gt ${#sites[@]} ] && echo -e "${RED}无效编号${NC}" && return
 
     local d="${sites[$((n-1))]}"
-    local file="$BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+    local file="$SITE_BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
 
     if [ ! -d "$SITES_DIR/$d" ]; then
         echo -e "${RED}站点目录不存在: $SITES_DIR/$d${NC}"
         return 1
     fi
 
-    if tar -czf "$file" -C "$SITES_DIR" "$d" 2>/dev/null; then
+    if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$d" 2>/dev/null; then
         echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
-        upload_to_ftp "$file"
-        cleanup_backups "${d}_"
+        upload_to_ftp "$file" "site"
+        cleanup_backups "${d}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
     else
         echo -e "${RED}备份失败${NC}"
         rm -f "$file"
@@ -966,24 +994,24 @@ backup_site() {
 restore_site() {
     echo ""
     echo -e "${CYAN}选择要恢复的备份:${NC}"
-    
+
     local i=1
     local files=()
-    for f in $BACKUP_DIR/*.tar.gz; do
+    for f in "$SITE_BACKUP_DIR"/*.tar.gz "$BACKUP_DIR"/*.tar.gz; do
         [ -f "$f" ] || continue
         files+=("$f")
         printf " %2d) %s\n" $i "$(basename "$f")"
         ((i++))
     done
-    
+
     [ ${#files[@]} -eq 0 ] && echo "无备份" && return
     echo "  0) 返回"
     echo ""
     read -p "编号: " n
-    
+
     if [[ ! "$n" =~ ^[0-9]+$ ]] || [ "$n" -eq 0 ]; then return; fi
     [ "$n" -gt ${#files[@]} ] && echo -e "${RED}无效编号${NC}" && return
-    
+
     local f="${files[$((n-1))]}"
     tar -xzf "$f" -C "$SITES_DIR" && echo -e "${GREEN}恢复成功${NC}"
 }
@@ -991,7 +1019,7 @@ restore_site() {
 backup_db() {
     echo ""
     echo -e "${CYAN}选择要备份的数据库:${NC}"
-    
+
     local i=1
     local dbs=()
     while read -r db; do
@@ -1007,16 +1035,16 @@ backup_db() {
     echo ""
     read -p "编号: " n
 
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$DB_BACKUP_DIR"
 
     if [ "$n" = "a" ]; then
         local success=0 fail=0
         for db in "${dbs[@]}"; do
-            local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
+            local file="$DB_BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
             if mysqldump_exec "$db" "$file"; then
                 echo -e "${GREEN}备份成功: $db${NC}"
-                upload_to_ftp "$file"
-                cleanup_backups "${db}_"
+                upload_to_ftp "$file" "database"
+                cleanup_backups "${db}_" "$DB_BACKUP_DIR" "$DB_KEEP"
                 ((success++))
             else
                 ((fail++))
@@ -1030,11 +1058,11 @@ backup_db() {
     [ "$n" -gt ${#dbs[@]} ] && echo -e "${RED}无效编号${NC}" && return
 
     local db="${dbs[$((n-1))]}"
-    local file="$BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
+    local file="$DB_BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
     if mysqldump_exec "$db" "$file"; then
         echo -e "${GREEN}备份成功: $file${NC}"
-        upload_to_ftp "$file"
-        cleanup_backups "${db}_"
+        upload_to_ftp "$file" "database"
+        cleanup_backups "${db}_" "$DB_BACKUP_DIR" "$DB_KEEP"
     fi
 }
 
@@ -1044,7 +1072,7 @@ restore_db() {
 
     local i=1
     local files=()
-    for f in $BACKUP_DIR/*.sql; do
+    for f in "$DB_BACKUP_DIR"/*.sql "$BACKUP_DIR"/*.sql; do
         [ -f "$f" ] || continue
         files+=("$f")
         printf " %2d) %s ($(du -h "$f" | cut -f1))\n" $i "$(basename "$f")"
@@ -1076,49 +1104,96 @@ restore_db() {
 list_backups() {
     echo ""
     echo -e "${CYAN}======== 本地备份 ========${NC}"
-    if [ -d "$BACKUP_DIR" ] && [ "$(ls -A $BACKUP_DIR 2>/dev/null)" ]; then
-        ls -lh "$BACKUP_DIR" | grep -v ^total
-        echo ""
-        echo -e "保留策略: 最新 ${YELLOW}$BACKUP_KEEP${NC} 份"
+
+    # 数据库备份
+    echo -e "\n${YELLOW}[数据库备份]${NC} $DB_BACKUP_DIR (保留 $DB_KEEP 份)"
+    if [ -d "$DB_BACKUP_DIR" ] && [ "$(ls -A "$DB_BACKUP_DIR" 2>/dev/null)" ]; then
+        ls -lh "$DB_BACKUP_DIR" 2>/dev/null | grep -v ^total | head -10
+        local db_count=$(ls "$DB_BACKUP_DIR"/*.sql 2>/dev/null | wc -l)
+        [ "$db_count" -gt 10 ] && echo -e "  ... 共 $db_count 个文件"
     else
-        echo "无备份"
+        echo "  无备份"
     fi
-    
+
+    # 站点备份
+    echo -e "\n${YELLOW}[站点备份]${NC} $SITE_BACKUP_DIR (保留 $SITE_KEEP 份)"
+    if [ -d "$SITE_BACKUP_DIR" ] && [ "$(ls -A "$SITE_BACKUP_DIR" 2>/dev/null)" ]; then
+        ls -lh "$SITE_BACKUP_DIR" 2>/dev/null | grep -v ^total | head -10
+        local site_count=$(ls "$SITE_BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
+        [ "$site_count" -gt 10 ] && echo -e "  ... 共 $site_count 个文件"
+    else
+        echo "  无备份"
+    fi
+
+    # 路径备份
+    if [ -d "$PATH_BACKUP_DIR" ] && [ "$(ls -A "$PATH_BACKUP_DIR" 2>/dev/null)" ]; then
+        echo -e "\n${YELLOW}[路径备份]${NC} $PATH_BACKUP_DIR"
+        ls -lh "$PATH_BACKUP_DIR" 2>/dev/null | grep -v ^total | head -10
+    fi
+
+    # 旧备份 (根目录)
+    local old_count=$(ls "$BACKUP_DIR"/*.sql "$BACKUP_DIR"/*.tar.gz 2>/dev/null | wc -l)
+    if [ "$old_count" -gt 0 ]; then
+        echo -e "\n${YELLOW}[旧备份]${NC} $BACKUP_DIR (待迁移)"
+        ls -lh "$BACKUP_DIR"/*.sql "$BACKUP_DIR"/*.tar.gz 2>/dev/null | head -5
+        [ "$old_count" -gt 5 ] && echo -e "  ... 共 $old_count 个文件"
+    fi
+
     if [ "$FTP_ENABLED" = "true" ]; then
         echo ""
         echo -e "${CYAN}======== FTP远程备份 ========${NC}"
         echo -e "服务器: ${FTP_HOST}:${FTP_PORT}"
-        echo -e "路径: ${FTP_PATH}"
+        echo -e "路径: ${FTP_PATH}/database, ${FTP_PATH}/site"
     fi
 }
 
 backup_settings() {
     echo ""
     echo -e "${CYAN}======== 备份设置 ========${NC}"
-    echo -e " 本地目录: $BACKUP_DIR"
-    echo -e " 保留份数: $BACKUP_KEEP"
+    echo -e " 备份根目录: $BACKUP_DIR"
+    echo -e "   数据库:   $DB_BACKUP_DIR (保留 $DB_KEEP 份)"
+    echo -e "   站点:     $SITE_BACKUP_DIR (保留 $SITE_KEEP 份)"
+    echo -e "   路径:     $PATH_BACKUP_DIR"
     echo -e " FTP备份:  $([ "$FTP_ENABLED" = "true" ] && echo -e "${GREEN}已开启${NC}" || echo -e "${RED}未开启${NC}")"
-    [ "$FTP_ENABLED" = "true" ] && echo -e " FTP服务器: $FTP_HOST:$FTP_PORT"
+    [ "$FTP_ENABLED" = "true" ] && echo -e " FTP服务器: $FTP_HOST:$FTP_PORT${FTP_PATH}"
     echo ""
-    echo " 1) 设置保留份数"
-    echo " 2) 配置FTP"
-    echo " 3) 测试FTP连接"
+    echo " 1) 设置数据库保留份数"
+    echo " 2) 设置站点保留份数"
+    echo " 3) 配置FTP"
+    echo " 4) 测试FTP连接"
     echo " 0) 返回"
     echo ""
     read -p "选择: " c
     case "$c" in
-        1) set_backup_keep;;
-        2) set_ftp_config;;
-        3) test_ftp;;
+        1) set_db_keep;;
+        2) set_site_keep;;
+        3) set_ftp_config;;
+        4) test_ftp;;
     esac
 }
 
-set_backup_keep() {
-    read -p "保留最近多少份备份 [$BACKUP_KEEP]: " n
+set_db_keep() {
+    read -p "数据库备份保留份数 [$DB_KEEP]: " n
     [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return
-    sed -i "s/^BACKUP_KEEP=.*/BACKUP_KEEP=$n/" "$BACKUP_CONF"
-    BACKUP_KEEP=$n
-    echo -e "${GREEN}已设置保留 $n 份${NC}"
+    if grep -q "^DB_KEEP=" "$BACKUP_CONF" 2>/dev/null; then
+        sed -i "s/^DB_KEEP=.*/DB_KEEP=$n/" "$BACKUP_CONF"
+    else
+        echo "DB_KEEP=$n" >> "$BACKUP_CONF"
+    fi
+    DB_KEEP=$n
+    echo -e "${GREEN}已设置数据库备份保留 $n 份${NC}"
+}
+
+set_site_keep() {
+    read -p "站点备份保留份数 [$SITE_KEEP]: " n
+    [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -gt 0 ] || return
+    if grep -q "^SITE_KEEP=" "$BACKUP_CONF" 2>/dev/null; then
+        sed -i "s/^SITE_KEEP=.*/SITE_KEEP=$n/" "$BACKUP_CONF"
+    else
+        echo "SITE_KEEP=$n" >> "$BACKUP_CONF"
+    fi
+    SITE_KEEP=$n
+    echo -e "${GREEN}已设置站点备份保留 $n 份${NC}"
 }
 
 set_ftp_config() {
@@ -1319,9 +1394,10 @@ show_help() {
     echo "  site ssl renew          续期所有证书"
     echo ""
     echo "备份恢复:"
-    echo "  site backup <域名>      备份站点"
+    echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
+    echo "  site backup db [库名]     备份数据库 (不指定则备份全部)"
+    echo "  site backup path <路径>   备份指定目录"
     echo "  site restore <域名> <文件>  恢复站点"
-    echo "  site db backup [数据库]  备份数据库"
     echo "  site db restore <库> <文件>  恢复数据库"
     echo ""
     echo "软件管理:"
@@ -1336,6 +1412,16 @@ show_help() {
     echo "  site mysql restart|status"
     echo "  site redis restart|status"
     echo ""
+    # 进程管理 (仅已安装时显示)
+    if command -v supervisorctl &>/dev/null; then
+        echo "进程管理:"
+        echo "  site supervisor status  查看进程状态"
+        echo "  site supervisor start|stop|restart <app>"
+        echo "  site supervisor reload  重载配置"
+        echo "  site supervisor add <名称> <命令> [目录]"
+        echo "  site supervisor remove <app>"
+        echo ""
+    fi
     echo "安全管理:"
     echo "  site firewall status|on|off"
     echo "  site firewall allow <端口>"
@@ -1421,30 +1507,114 @@ handle_cli() {
                 *) ssl_request "$2" "${@:3}";;
             esac;;
         backup)
-            if [ -z "$2" ]; then
-                echo "用法: site backup <域名>"
-            else
-                mkdir -p "$BACKUP_DIR"
-                # 检查磁盘空间
-                local avail=$(df -m "$BACKUP_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
-                if [ -n "$avail" ] && [ "$avail" -lt 500 ]; then
-                    echo -e "${RED}磁盘空间不足 (剩余 ${avail}MB)${NC}"
-                    exit 1
-                fi
-                if [ ! -d "$SITES_DIR/$2" ]; then
-                    echo -e "${RED}站点目录不存在: $SITES_DIR/$2${NC}"
-                    exit 1
-                fi
-                local file="$BACKUP_DIR/${2}_$(date +%Y%m%d_%H%M%S).tar.gz"
-                if tar -czf "$file" -C "$SITES_DIR" "$2" 2>/dev/null; then
-                    echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
-                    cleanup_backups "${2}_"
-                else
-                    echo -e "${RED}备份失败${NC}"
-                    rm -f "$file"
-                    exit 1
-                fi
-            fi
+            case "$2" in
+                site)
+                    mkdir -p "$SITE_BACKUP_DIR"
+                    local exclude_args=$(get_exclude_args)
+                    if [ "$3" = "all" ] || [ -z "$3" ]; then
+                        # 备份所有站点
+                        local success=0 fail=0
+                        for conf in "$NGINX_CONF_DIR"/*; do
+                            [ -f "$conf" ] || continue
+                            local name=$(basename "$conf")
+                            [[ "$name" == "default" || "$name" == *.bak ]] && continue
+                            local d="${name%.conf}"
+                            if [ ! -d "$SITES_DIR/$d" ]; then
+                                echo -e "${YELLOW}跳过: $d (目录不存在)${NC}"
+                                ((fail++))
+                                continue
+                            fi
+                            local file="$SITE_BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
+                            if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$d" 2>/dev/null; then
+                                echo -e "${GREEN}备份成功: $d ($(du -h "$file" | cut -f1))${NC}"
+                                upload_to_ftp "$file" "site"
+                                cleanup_backups "${d}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
+                                ((success++))
+                            else
+                                echo -e "${RED}备份失败: $d${NC}"
+                                rm -f "$file"
+                                ((fail++))
+                            fi
+                        done
+                        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
+                    else
+                        # 备份单个站点
+                        if [ ! -d "$SITES_DIR/$3" ]; then
+                            echo -e "${RED}站点目录不存在: $SITES_DIR/$3${NC}"
+                            exit 1
+                        fi
+                        local file="$SITE_BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).tar.gz"
+                        if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$3" 2>/dev/null; then
+                            echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
+                            upload_to_ftp "$file" "site"
+                            cleanup_backups "${3}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
+                        else
+                            echo -e "${RED}备份失败${NC}"
+                            rm -f "$file"
+                            exit 1
+                        fi
+                    fi
+                    ;;
+                db)
+                    mkdir -p "$DB_BACKUP_DIR"
+                    if [ "$3" = "all" ] || [ -z "$3" ]; then
+                        # 备份所有数据库
+                        local success=0 fail=0
+                        while read -r db; do
+                            [[ "$db" =~ ^(Database|information_schema|performance_schema|mysql|sys)$ ]] && continue
+                            local file="$DB_BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
+                            if mysqldump_exec "$db" "$file"; then
+                                echo -e "${GREEN}备份成功: $db${NC}"
+                                upload_to_ftp "$file" "database"
+                                cleanup_backups "${db}_" "$DB_BACKUP_DIR" "$DB_KEEP"
+                                ((success++))
+                            else
+                                ((fail++))
+                            fi
+                        done < <(mysql_exec -N -e "SHOW DATABASES;")
+                        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
+                    else
+                        # 备份指定数据库
+                        local file="$DB_BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql"
+                        if mysqldump_exec "$3" "$file"; then
+                            echo -e "${GREEN}备份成功: $file${NC}"
+                            upload_to_ftp "$file" "database"
+                            cleanup_backups "${3}_" "$DB_BACKUP_DIR" "$DB_KEEP"
+                        fi
+                    fi
+                    ;;
+                path)
+                    if [ -z "$3" ]; then
+                        echo "用法: site backup path <路径>"
+                        exit 1
+                    fi
+                    local target_path="$3"
+                    if [ ! -d "$target_path" ]; then
+                        echo -e "${RED}目录不存在: $target_path${NC}"
+                        exit 1
+                    fi
+                    mkdir -p "$PATH_BACKUP_DIR"
+                    local path_name=$(basename "$target_path")
+                    local exclude_args=$(get_exclude_args)
+                    local file="$PATH_BACKUP_DIR/${path_name}_$(date +%Y%m%d_%H%M%S).tar.gz"
+                    echo "正在备份 $target_path ..."
+                    if tar -czf "$file" $exclude_args -C "$(dirname "$target_path")" "$path_name" 2>/dev/null; then
+                        echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
+                        upload_to_ftp "$file" "path"
+                        cleanup_backups "${path_name}_" "$PATH_BACKUP_DIR" "${PATH_KEEP:-7}"
+                    else
+                        echo -e "${RED}备份失败${NC}"
+                        rm -f "$file"
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    echo "用法:"
+                    echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
+                    echo "  site backup db [库名]     备份数据库 (不指定则备份全部)"
+                    echo "  site backup path <路径>   备份指定目录"
+                    ;;
+            esac
             ;;
         restore)
             if [ -z "$2" ] || [ -z "$3" ]; then
@@ -1468,9 +1638,8 @@ handle_cli() {
                 import) db_import "$3" "$4";;
                 export) db_export "$3";;
                 list) db_list;;
-                backup) mkdir -p "$BACKUP_DIR"; if [ -n "$3" ]; then mysqldump_exec "$3" "$BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql" && echo "备份成功"; else echo "用法: site db backup <数据库名>"; fi;;
                 restore) if [ -n "$3" ] && [ -n "$4" ] && [ -f "$4" ]; then mysql_exec "$3" < "$4" && echo "恢复成功" || echo -e "${RED}恢复失败${NC}"; else echo "用法: site db restore <库> <文件>"; fi;;
-                *) echo "用法: site db <create|drop|import|export|list|backup|restore>";;
+                *) echo "用法: site db <create|drop|import|export|list|restore>"; echo "备份请使用: site backup db [库名]";;
             esac;;
         nginx) case "$2" in
             reload) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
@@ -1491,6 +1660,53 @@ handle_cli() {
         redis) case "$2" in
             restart) systemctl restart redis-server && echo -e "${GREEN}Redis 已重启${NC}" || echo -e "${RED}Redis 重启失败${NC}";;
             *) systemctl status redis-server --no-pager;;
+            esac;;
+        supervisor|sv)
+            if ! command -v supervisorctl &>/dev/null; then
+                echo -e "${RED}Supervisor 未安装${NC}"
+                echo "安装: apt install supervisor"
+                exit 1
+            fi
+            case "$2" in
+                status|"") supervisorctl status;;
+                start) [ -n "$3" ] && supervisorctl start "$3" || echo "用法: site supervisor start <app|all>";;
+                stop) [ -n "$3" ] && supervisorctl stop "$3" || echo "用法: site supervisor stop <app|all>";;
+                restart) [ -n "$3" ] && supervisorctl restart "$3" || echo "用法: site supervisor restart <app|all>";;
+                reload|reread) supervisorctl reread && supervisorctl update && echo -e "${GREEN}Supervisor 配置已重载${NC}";;
+                tail) [ -n "$3" ] && supervisorctl tail -f "$3" || echo "用法: site supervisor tail <app>";;
+                update) supervisorctl update;;
+                add)
+                    if [ -n "$3" ] && [ -n "$4" ]; then
+                        local app_name="$3"
+                        local app_cmd="$4"
+                        local app_dir="${5:-$(pwd)}"
+                        cat > "/etc/supervisor/conf.d/${app_name}.conf" << SUPCONF
+[program:${app_name}]
+command=${app_cmd}
+directory=${app_dir}
+autostart=true
+autorestart=true
+stderr_logfile=/var/log/supervisor/${app_name}.err.log
+stdout_logfile=/var/log/supervisor/${app_name}.out.log
+user=www
+SUPCONF
+                        supervisorctl reread && supervisorctl update
+                        echo -e "${GREEN}已添加: ${app_name}${NC}"
+                    else
+                        echo "用法: site supervisor add <名称> <命令> [目录]"
+                    fi
+                    ;;
+                remove|rm)
+                    if [ -n "$3" ]; then
+                        supervisorctl stop "$3" 2>/dev/null
+                        rm -f "/etc/supervisor/conf.d/${3}.conf"
+                        supervisorctl reread && supervisorctl update
+                        echo -e "${GREEN}已移除: $3${NC}"
+                    else
+                        echo "用法: site supervisor remove <app>"
+                    fi
+                    ;;
+                *) echo "用法: site supervisor <status|start|stop|restart|reload|tail|add|remove>";;
             esac;;
         firewall) case "$2" in
                 status) ufw status numbered;;
