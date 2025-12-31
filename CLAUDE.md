@@ -94,7 +94,7 @@ cd panel && bash build.sh     # 同时构建 Vue 前端 + Go 后端
 ```
 /www/wwwroot/       # 网站文件
 /www/backup/        # 备份 (按类型分: database/, site/, path/)
-/srv/               # 配置目录 (ssl/, runtime/, supervisor/)
+/www/vhost/         # 配置目录 (nginx/, rewrite/, supervisor/)
 ```
 
 ## 开发注意事项
