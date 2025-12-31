@@ -1938,11 +1938,11 @@ SUPCONF
                             # cron 环境 PATH 不含 /usr/local/bin，需使用完整路径
                             local full_cmd="${cmd/site//usr/local/bin/site}"
                         else
-                            # 其他命令使用包装器
+                            # 其他命令使用 site cron run 包装
                             if [ -n "$log_file" ]; then
-                                local full_cmd="$wrapper \"$cmd\" \"$log_file\""
+                                local full_cmd="/usr/local/bin/site cron run \"$cmd\" \"$log_file\""
                             else
-                                local full_cmd="$wrapper \"$cmd\""
+                                local full_cmd="/usr/local/bin/site cron run \"$cmd\""
                             fi
                         fi
                         # 添加到 crontab
