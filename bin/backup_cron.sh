@@ -200,10 +200,34 @@ show_help() {
 }
 
 # ==================== 主入口 ====================
-case "$1" in
-    db|database) backup_database "$2" "$3" ;;
-    site)        backup_site "$2" "$3" ;;
-    path)        backup_path "$2" "$3" ;;
-    all)         backup_db_all; backup_site_all ;;
-    *)           show_help ;;
-esac
+main() {
+    local cmd="$1"
+    local exit_code=0
+
+    # 包装器：开始日志
+    log "----------------------------------------------------------------------------"
+    log "☆ 开始执行: backup $*"
+    log "----------------------------------------------------------------------------"
+
+    case "$cmd" in
+        db|database) backup_database "$2" "$3" || exit_code=$? ;;
+        site)        backup_site "$2" "$3" || exit_code=$? ;;
+        path)        backup_path "$2" "$3" || exit_code=$? ;;
+        all)         { backup_db_all && backup_site_all; } || exit_code=$? ;;
+        *)           show_help; return 0 ;;
+    esac
+
+    # 包装器：结束日志
+    log "----------------------------------------------------------------------------"
+    if [ $exit_code -eq 0 ]; then
+        log "★ 执行成功"
+    else
+        log "✗ 执行失败 (退出码: $exit_code)"
+    fi
+    log "----------------------------------------------------------------------------"
+    log ""
+
+    return $exit_code
+}
+
+main "$@"

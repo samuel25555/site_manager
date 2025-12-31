@@ -112,7 +112,7 @@ nginx_safe_reload() {
 }
 
 # ================== 伪静态管理 ==================
-NGINX_REWRITE_DIR="${NGINX_REWRITE_DIR:-/srv/vhost/rewrite}"
+NGINX_REWRITE_DIR="${NGINX_REWRITE_DIR:-/www/vhost/rewrite}"
 REWRITE_TEMPLATES_DIR="${REWRITE_TEMPLATES_DIR:-/opt/site_manager/config/rewrite}"
 
 # 列出可用的伪静态规则
@@ -390,6 +390,139 @@ site_create() {
     _do_site_create "$domain" "$type" "$php_version"
 }
 
+# 设置应用站点 (node/pm2/python/docker)
+_setup_app_site() {
+    local domain="$1"
+    local type="$2"
+    local port="$3"
+    local site_path="$SITES_DIR/$domain"
+
+    case "$type" in
+        node)
+            # Supervisor 配置
+            local sv_conf_dir="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"; mkdir -p "$sv_conf_dir"
+            cat > "$sv_conf_dir/$domain.conf" << EOF
+[program:$domain]
+command=node $site_path/server.js
+directory=$site_path
+user=www
+autostart=true
+autorestart=true
+environment=NODE_ENV="production",PORT="$port"
+stdout_logfile=$LOGS_DIR/${domain}_node.log
+stderr_logfile=$LOGS_DIR/${domain}_node_error.log
+EOF
+            # 示例 server.js
+            cat > "$site_path/server.js" << 'NODEJS'
+const http = require('http');
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+    res.end('<h1>Node.js 站点运行中</h1>');
+}).listen(port, () => console.log(`Server on port ${port}`));
+NODEJS
+            command -v supervisorctl &>/dev/null && supervisorctl reread && supervisorctl update
+            echo -e "${CYAN}Node.js 站点使用端口: $port${NC}"
+            echo -e "${CYAN}Supervisor 配置: $sv_conf_dir/$domain.conf${NC}"
+            ;;
+        pm2)
+            # PM2 ecosystem 配置
+            cat > "$site_path/ecosystem.config.js" << EOF
+module.exports = {
+  apps: [{
+    name: '$domain',
+    script: 'server.js',
+    cwd: '$site_path',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '500M',
+    env: { NODE_ENV: 'production', PORT: $port }
+  }]
+};
+EOF
+            # 示例 server.js
+            cat > "$site_path/server.js" << 'NODEJS'
+const http = require('http');
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+    res.end('<h1>PM2 站点运行中</h1>');
+}).listen(port, () => console.log(`Server on port ${port}`));
+NODEJS
+            # 启动 PM2
+            if command -v pm2 &>/dev/null; then
+                run_pm2 start "$site_path/ecosystem.config.js" 2>/dev/null || true
+                run_pm2 save 2>/dev/null || true
+            else
+                echo -e "${YELLOW}PM2 未安装，请先安装: site install nodejs${NC}"
+            fi
+            echo -e "${CYAN}PM2 站点使用端口: $port${NC}"
+            echo -e "${CYAN}PM2 配置: $site_path/ecosystem.config.js${NC}"
+            ;;
+        python)
+            # Supervisor 配置
+            local sv_conf_dir="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"; mkdir -p "$sv_conf_dir"
+            cat > "$sv_conf_dir/$domain.conf" << EOF
+[program:$domain]
+command=python3 $site_path/app.py
+directory=$site_path
+user=www
+autostart=true
+autorestart=true
+environment=PORT="$port"
+stdout_logfile=$LOGS_DIR/${domain}_python.log
+stderr_logfile=$LOGS_DIR/${domain}_python_error.log
+EOF
+            # 示例 app.py
+            cat > "$site_path/app.py" << 'PYTHON'
+import os
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+port = int(os.environ.get('PORT', 8000))
+print(f'Server on port {port}')
+HTTPServer(('', port), SimpleHTTPRequestHandler).serve_forever()
+PYTHON
+            command -v supervisorctl &>/dev/null && supervisorctl reread && supervisorctl update
+            echo -e "${CYAN}Python 站点使用端口: $port${NC}"
+            echo -e "${CYAN}Supervisor 配置: $sv_conf_dir/$domain.conf${NC}"
+            ;;
+        docker)
+            # Docker compose 配置
+            cat > "$site_path/docker-compose.yml" << EOF
+services:
+  app:
+    build: .
+    ports:
+      - "$port:$port"
+    environment:
+      - PORT=$port
+    restart: unless-stopped
+EOF
+            cat > "$site_path/Dockerfile" << 'DOCKER'
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm install --production
+COPY . .
+CMD ["node", "server.js"]
+DOCKER
+            cat > "$site_path/server.js" << 'NODEJS'
+const http = require('http');
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, {'Content-Type': 'text/html; charset=utf-8'});
+    res.end('<h1>Docker 站点运行中</h1>');
+}).listen(port, () => console.log(`Server on port ${port}`));
+NODEJS
+            echo '{"name":"app","version":"1.0.0","main":"server.js"}' > "$site_path/package.json"
+            echo -e "${CYAN}Docker 站点使用端口: $port${NC}"
+            echo -e "${CYAN}启动命令: cd $site_path && docker compose up -d${NC}"
+            ;;
+    esac
+
+    chown -R www:www "$site_path"
+}
+
 # 实际创建站点的函数
 _do_site_create() {
     local domain="$1"
@@ -415,15 +548,18 @@ _do_site_create() {
         fi
     fi
 
-    # 创建目录
+    # 创建目录（已有项目则跳过默认文件）
+    local is_empty=true
+    [ -d "$site_path" ] && [ -n "$(ls -A "$site_path" 2>/dev/null)" ] && is_empty=false
+
     if [ "$type" = "php" ]; then
         mkdir -p "$site_path/public"
-        echo "<?php phpinfo();" > "$site_path/public/index.php"
         local root="$site_path/public"
+        [ "$is_empty" = true ] && echo "<?php phpinfo();" > "$root/index.php"
     else
         mkdir -p "$site_path"
-        echo "<h1>Welcome to $domain</h1>" > "$site_path/index.html"
         local root="$site_path"
+        [ "$is_empty" = true ] && echo "<h1>Welcome to $domain</h1>" > "$root/index.html"
     fi
     chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
 
@@ -465,6 +601,28 @@ NGINX
     }
 }
 NGINX
+    elif [ "$type" = "node" ] || [ "$type" = "pm2" ] || [ "$type" = "python" ] || [ "$type" = "docker" ]; then
+        # 获取可用端口
+        local port=$(find_available_port 3000)
+        [ "$type" = "python" ] && port=$(find_available_port 8000)
+
+        cat >> "$conf_path" << NGINX
+
+    location / {
+        proxy_pass http://127.0.0.1:$port;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+NGINX
+        # 创建应用配置
+        _setup_app_site "$domain" "$type" "$port"
     else
         cat >> "$conf_path" << 'NGINX'
 
@@ -1377,7 +1535,7 @@ show_help() {
     echo ""
     echo "站点管理:"
     echo "  site list               查看所有站点"
-    echo "  site create <域名> <类型>  创建站点 (php73/php80/php83/static/proxy)"
+    echo "  site create <域名> <类型>  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
     echo "  site delete <域名> [--config|--full|--backup]  删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
@@ -1397,6 +1555,8 @@ show_help() {
     echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
     echo "  site backup db [库名]     备份数据库 (不指定则备份全部)"
     echo "  site backup path <路径>   备份指定目录"
+    echo "  site backup list          查看备份列表"
+    echo "  site backup config        查看/修改备份配置"
     echo "  site restore <域名> <文件>  恢复站点"
     echo "  site db restore <库> <文件>  恢复数据库"
     echo ""
@@ -1412,13 +1572,19 @@ show_help() {
     echo "  site mysql restart|status"
     echo "  site redis restart|status"
     echo ""
+    echo "计划任务:"
+    echo "  site cron list              查看计划任务"
+    echo "  site cron add \"<时间>\" \"<命令>\"  添加任务 (自动包装日志)"
+    echo "  site cron remove <编号>     删除任务"
+    echo "  site cron log [行数]        查看任务日志"
+    echo ""
     # 进程管理 (仅已安装时显示)
     if command -v supervisorctl &>/dev/null; then
         echo "进程管理:"
         echo "  site supervisor status  查看进程状态"
         echo "  site supervisor start|stop|restart <app>"
         echo "  site supervisor reload  重载配置"
-        echo "  site supervisor add <名称> <命令> [目录]"
+        echo "  site supervisor add <名称> <命令> [目录] [用户]"
         echo "  site supervisor remove <app>"
         echo ""
     fi
@@ -1438,21 +1604,29 @@ handle_cli() {
         list) site_list;;
         create) [ -n "$2" ] && [ -n "$3" ] && {
             domain="$2"; type_arg="$3"
-            local type="" php_version=""
+            local type="" php_version="" port=""
             # 解析类型参数
             if [[ "$type_arg" =~ ^php([0-9])([0-9]+)$ ]]; then
                 type="php"
                 php_version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
             elif [[ "$type_arg" == "static" ]]; then
                 type="static"
+            elif [[ "$type_arg" == "node" ]]; then
+                type="node"
+            elif [[ "$type_arg" == "pm2" ]]; then
+                type="pm2"
+            elif [[ "$type_arg" == "python" ]]; then
+                type="python"
+            elif [[ "$type_arg" == "docker" ]]; then
+                type="docker"
             elif [[ "$type_arg" == "proxy" ]]; then
                 type="proxy"
             else
-                echo "无效类型: $type_arg (支持: php73/php80/php81/php83/static/proxy)"
+                echo "无效类型: $type_arg (支持: php73/php80/php83/static/node/pm2/python/docker/proxy)"
                 exit 1
             fi
             _do_site_create "$domain" "$type" "$php_version"
-        } || echo "用法: site create <域名> <类型> (php73/php80/php81/php83/static/proxy)";;
+        } || echo "用法: site create <域名> <类型> (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
         delete)
             if [ -z "$2" ]; then
                 echo "用法: site delete <域名> [选项]"
@@ -1508,111 +1682,75 @@ handle_cli() {
             esac;;
         backup)
             case "$2" in
-                site)
-                    mkdir -p "$SITE_BACKUP_DIR"
-                    local exclude_args=$(get_exclude_args)
-                    if [ "$3" = "all" ] || [ -z "$3" ]; then
-                        # 备份所有站点
-                        local success=0 fail=0
-                        for conf in "$NGINX_CONF_DIR"/*; do
-                            [ -f "$conf" ] || continue
-                            local name=$(basename "$conf")
-                            [[ "$name" == "default" || "$name" == *.bak ]] && continue
-                            local d="${name%.conf}"
-                            if [ ! -d "$SITES_DIR/$d" ]; then
-                                echo -e "${YELLOW}跳过: $d (目录不存在)${NC}"
-                                ((fail++))
-                                continue
-                            fi
-                            local file="$SITE_BACKUP_DIR/${d}_$(date +%Y%m%d_%H%M%S).tar.gz"
-                            if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$d" 2>/dev/null; then
-                                echo -e "${GREEN}备份成功: $d ($(du -h "$file" | cut -f1))${NC}"
-                                upload_to_ftp "$file" "site"
-                                cleanup_backups "${d}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
-                                ((success++))
-                            else
-                                echo -e "${RED}备份失败: $d${NC}"
-                                rm -f "$file"
-                                ((fail++))
-                            fi
-                        done
-                        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
-                    else
-                        # 备份单个站点
-                        if [ ! -d "$SITES_DIR/$3" ]; then
-                            echo -e "${RED}站点目录不存在: $SITES_DIR/$3${NC}"
-                            exit 1
-                        fi
-                        local file="$SITE_BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).tar.gz"
-                        if tar -czf "$file" $exclude_args -C "$SITES_DIR" "$3" 2>/dev/null; then
-                            echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
-                            upload_to_ftp "$file" "site"
-                            cleanup_backups "${3}_" "$SITE_BACKUP_DIR" "$SITE_KEEP"
-                        else
-                            echo -e "${RED}备份失败${NC}"
-                            rm -f "$file"
-                            exit 1
-                        fi
-                    fi
+                site|db|path|all)
+                    # 统一调用 backup_cron.sh，内置包装器日志
+                    /opt/site_manager/bin/backup_cron.sh "$2" "$3" "$4"
                     ;;
-                db)
-                    mkdir -p "$DB_BACKUP_DIR"
-                    if [ "$3" = "all" ] || [ -z "$3" ]; then
-                        # 备份所有数据库
-                        local success=0 fail=0
-                        while read -r db; do
-                            [[ "$db" =~ ^(Database|information_schema|performance_schema|mysql|sys)$ ]] && continue
-                            local file="$DB_BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
-                            if mysqldump_exec "$db" "$file"; then
-                                echo -e "${GREEN}备份成功: $db${NC}"
-                                upload_to_ftp "$file" "database"
-                                cleanup_backups "${db}_" "$DB_BACKUP_DIR" "$DB_KEEP"
-                                ((success++))
-                            else
-                                ((fail++))
-                            fi
-                        done < <(mysql_exec -N -e "SHOW DATABASES;")
-                        echo -e "\n备份完成: ${GREEN}成功 $success${NC}, ${RED}失败 $fail${NC}"
-                    else
-                        # 备份指定数据库
-                        local file="$DB_BACKUP_DIR/${3}_$(date +%Y%m%d_%H%M%S).sql"
-                        if mysqldump_exec "$3" "$file"; then
-                            echo -e "${GREEN}备份成功: $file${NC}"
-                            upload_to_ftp "$file" "database"
-                            cleanup_backups "${3}_" "$DB_BACKUP_DIR" "$DB_KEEP"
-                        fi
-                    fi
+                list)
+                    list_backups
                     ;;
-                path)
-                    if [ -z "$3" ]; then
-                        echo "用法: site backup path <路径>"
-                        exit 1
-                    fi
-                    local target_path="$3"
-                    if [ ! -d "$target_path" ]; then
-                        echo -e "${RED}目录不存在: $target_path${NC}"
-                        exit 1
-                    fi
-                    mkdir -p "$PATH_BACKUP_DIR"
-                    local path_name=$(basename "$target_path")
-                    local exclude_args=$(get_exclude_args)
-                    local file="$PATH_BACKUP_DIR/${path_name}_$(date +%Y%m%d_%H%M%S).tar.gz"
-                    echo "正在备份 $target_path ..."
-                    if tar -czf "$file" $exclude_args -C "$(dirname "$target_path")" "$path_name" 2>/dev/null; then
-                        echo -e "${GREEN}备份成功: $file ($(du -h "$file" | cut -f1))${NC}"
-                        upload_to_ftp "$file" "path"
-                        cleanup_backups "${path_name}_" "$PATH_BACKUP_DIR" "${PATH_KEEP:-7}"
-                    else
-                        echo -e "${RED}备份失败${NC}"
-                        rm -f "$file"
-                        exit 1
-                    fi
+                config)
+                    local conf="/opt/site_manager/config/backup.conf"
+                    case "$3" in
+                        "")
+                            echo -e "${CYAN}======== 备份配置 ========${NC}"
+                            echo ""
+                            echo -e "${YELLOW}保留份数:${NC}"
+                            echo "  数据库: $DB_KEEP 份"
+                            echo "  站点:   $SITE_KEEP 份"
+                            echo "  路径:   ${PATH_KEEP:-7} 份"
+                            echo ""
+                            echo -e "${YELLOW}FTP 配置:${NC}"
+                            if [ "$FTP_ENABLED" = "true" ]; then
+                                echo "  状态: ${GREEN}已启用${NC}"
+                                echo "  主机: $FTP_HOST:$FTP_PORT"
+                                echo "  用户: $FTP_USER"
+                                echo "  路径: $FTP_PATH"
+                                echo "  上传后删除本地: $FTP_DELETE_LOCAL"
+                            else
+                                echo "  状态: ${RED}未启用${NC}"
+                            fi
+                            echo ""
+                            echo "修改配置: $conf"
+                            ;;
+                        ftp)
+                            if [ "$4" = "on" ]; then
+                                sed -i 's/^FTP_ENABLED=.*/FTP_ENABLED=true/' "$conf"
+                                echo -e "${GREEN}FTP 备份已启用${NC}"
+                            elif [ "$4" = "off" ]; then
+                                sed -i 's/^FTP_ENABLED=.*/FTP_ENABLED=false/' "$conf"
+                                echo -e "${YELLOW}FTP 备份已禁用${NC}"
+                            else
+                                echo "用法: site backup config ftp <on|off>"
+                            fi
+                            ;;
+                        keep)
+                            if [ -n "$4" ] && [ -n "$5" ]; then
+                                case "$4" in
+                                    db) sed -i "s/^DB_KEEP=.*/DB_KEEP=$5/" "$conf"; echo "数据库保留: $5 份";;
+                                    site) sed -i "s/^SITE_KEEP=.*/SITE_KEEP=$5/" "$conf"; echo "站点保留: $5 份";;
+                                    path) sed -i "s/^PATH_KEEP=.*/PATH_KEEP=$5/" "$conf"; echo "路径保留: $5 份";;
+                                    *) echo "类型: db, site, path";;
+                                esac
+                            else
+                                echo "用法: site backup config keep <db|site|path> <份数>"
+                            fi
+                            ;;
+                        *)
+                            echo "用法:"
+                            echo "  site backup config              查看配置"
+                            echo "  site backup config ftp <on|off> 启用/禁用FTP"
+                            echo "  site backup config keep <类型> <份数>  设置保留份数"
+                            ;;
+                    esac
                     ;;
                 *)
                     echo "用法:"
                     echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
                     echo "  site backup db [库名]     备份数据库 (不指定则备份全部)"
                     echo "  site backup path <路径>   备份指定目录"
+                    echo "  site backup list          查看备份列表"
+                    echo "  site backup config        查看/修改备份配置"
                     ;;
             esac
             ;;
@@ -1680,7 +1818,18 @@ handle_cli() {
                         local app_name="$3"
                         local app_cmd="$4"
                         local app_dir="${5:-$(pwd)}"
-                        cat > "/etc/supervisor/conf.d/${app_name}.conf" << SUPCONF
+                        local app_user="${6:-root}"
+                        local conf_dir="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"
+
+                        # 自动解析命令中第一个词的完整路径
+                        local first_cmd=$(echo "$app_cmd" | awk '{print $1}')
+                        local full_path=$(which "$first_cmd" 2>/dev/null)
+                        if [ -n "$full_path" ] && [ "$full_path" != "$first_cmd" ]; then
+                            app_cmd="${app_cmd/$first_cmd/$full_path}"
+                        fi
+
+                        mkdir -p "$conf_dir"
+                        cat > "${conf_dir}/${app_name}.conf" << SUPCONF
 [program:${app_name}]
 command=${app_cmd}
 directory=${app_dir}
@@ -1688,25 +1837,141 @@ autostart=true
 autorestart=true
 stderr_logfile=/var/log/supervisor/${app_name}.err.log
 stdout_logfile=/var/log/supervisor/${app_name}.out.log
-user=www
+user=${app_user}
 SUPCONF
                         supervisorctl reread && supervisorctl update
                         echo -e "${GREEN}已添加: ${app_name}${NC}"
+                        echo -e "${CYAN}配置: ${conf_dir}/${app_name}.conf${NC}"
                     else
-                        echo "用法: site supervisor add <名称> <命令> [目录]"
+                        echo "用法: site supervisor add <名称> <命令> [目录] [用户]"
                     fi
                     ;;
                 remove|rm)
                     if [ -n "$3" ]; then
+                        local conf_dir="${SUPERVISOR_CONF_DIR:-/etc/supervisor/conf.d}"
                         supervisorctl stop "$3" 2>/dev/null
-                        rm -f "/etc/supervisor/conf.d/${3}.conf"
+                        rm -f "${conf_dir}/${3}.conf"
                         supervisorctl reread && supervisorctl update
                         echo -e "${GREEN}已移除: $3${NC}"
                     else
                         echo "用法: site supervisor remove <app>"
                     fi
                     ;;
-                *) echo "用法: site supervisor <status|start|stop|restart|reload|tail|add|remove>";;
+                fix)
+                    # 修复 supervisord.conf 中多个 [include] 块的问题
+                    local conf="/etc/supervisor/supervisord.conf"
+                    if [ -f "$conf" ]; then
+                        local include_count=$(grep -c '^\[include\]' "$conf")
+                        if [ "$include_count" -gt 1 ]; then
+                            echo -e "${YELLOW}发现 $include_count 个 [include] 块，正在合并...${NC}"
+                            # 提取所有 files 行并合并
+                            local all_files=$(grep '^files' "$conf" | sed 's/files\s*=\s*//' | tr '\n' ' ')
+                            # 删除所有 [include] 块
+                            sed -i '/^\[include\]/,/^files/d' "$conf"
+                            # 添加合并后的 [include] 块
+                            echo -e "\n[include]\nfiles = $all_files" >> "$conf"
+                            echo -e "${GREEN}已合并为单个 [include] 块${NC}"
+                            supervisorctl reread && supervisorctl update
+                        else
+                            echo -e "${GREEN}supervisord.conf 配置正常${NC}"
+                        fi
+                    else
+                        echo -e "${RED}未找到 $conf${NC}"
+                    fi
+                    ;;
+                *)
+                    # 透传其他命令给 supervisorctl
+                    if [ -n "$2" ]; then
+                        supervisorctl "${@:2}"
+                    else
+                        echo "用法: site supervisor <命令> [参数]"
+                        echo "常用: status|start|stop|restart|reload|tail|add|remove|fix"
+                        echo "其他命令直接透传给 supervisorctl"
+                    fi
+                    ;;
+            esac;;
+        cron)
+            local cron_log="/www/wwwlogs/site_manager/cron.log"
+            local wrapper="/opt/site_manager/scripts/cron_wrapper.sh"
+            case "$2" in
+                list|ls|"")
+                    echo -e "${CYAN}======== 计划任务列表 ========${NC}"
+                    crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | nl -ba
+                    ;;
+                add)
+                    if [ -n "$3" ] && [ -n "$4" ]; then
+                        local schedule="$3"
+                        local cmd="$4"
+                        local log_file="$5"
+                        # site 内置命令不需要包装器（已内置日志）
+                        if [[ "$cmd" == "site backup"* ]]; then
+                            local full_cmd="$cmd"
+                        else
+                            # 其他命令使用包装器
+                            if [ -n "$log_file" ]; then
+                                local full_cmd="$wrapper \"$cmd\" \"$log_file\""
+                            else
+                                local full_cmd="$wrapper \"$cmd\""
+                            fi
+                        fi
+                        # 添加到 crontab
+                        (crontab -l 2>/dev/null; echo "$schedule $full_cmd") | crontab -
+                        echo -e "${GREEN}已添加计划任务:${NC}"
+                        echo "  时间: $schedule"
+                        echo "  命令: $full_cmd"
+                    else
+                        echo "用法: site cron add \"<时间>\" \"<命令>\" [日志文件]"
+                        echo ""
+                        echo "示例:"
+                        echo "  site cron add \"0 * * * *\" \"site backup db\""
+                        echo "  site cron add \"0 4 * * *\" \"site backup site\""
+                        echo "  site cron add \"*/5 * * * *\" \"php /www/wwwroot/xxx/artisan schedule:run\""
+                        echo "  site cron add \"* * * * *\" \"php /www/wwwroot/xxx/artisan cron:open\" \"/www/wwwlogs/xxx_cron.log\""
+                    fi
+                    ;;
+                remove|rm)
+                    if [ -n "$3" ]; then
+                        local line_num="$3"
+                        local total=$(crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | wc -l)
+                        if [ "$line_num" -gt 0 ] && [ "$line_num" -le "$total" ]; then
+                            # 获取要删除的行内容
+                            local to_delete=$(crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | sed -n "${line_num}p")
+                            # 从 crontab 中删除该行
+                            crontab -l 2>/dev/null | grep -v "^${to_delete}$" | crontab -
+                            echo -e "${GREEN}已删除: $to_delete${NC}"
+                        else
+                            echo -e "${RED}无效编号: $line_num (共 $total 条)${NC}"
+                        fi
+                    else
+                        echo "用法: site cron remove <编号>"
+                        echo "先用 site cron list 查看编号"
+                    fi
+                    ;;
+                log)
+                    local lines="${3:-50}"
+                    if [ -f "$cron_log" ]; then
+                        echo -e "${CYAN}======== 计划任务日志 (最近 $lines 行) ========${NC}"
+                        tail -n "$lines" "$cron_log"
+                    else
+                        echo -e "${YELLOW}日志文件不存在: $cron_log${NC}"
+                    fi
+                    ;;
+                run)
+                    # 用包装器执行命令（供 crontab 调用）
+                    if [ -n "$3" ]; then
+                        "$wrapper" "$3" "$4"
+                    else
+                        echo "用法: site cron run \"<命令>\" [日志文件]"
+                    fi
+                    ;;
+                *)
+                    echo "用法:"
+                    echo "  site cron list              查看计划任务"
+                    echo "  site cron add \"<时间>\" \"<命令>\"  添加任务"
+                    echo "  site cron remove <编号>     删除任务"
+                    echo "  site cron log [行数]        查看日志"
+                    echo "  site cron run \"<命令>\"     用包装器执行"
+                    ;;
             esac;;
         firewall) case "$2" in
                 status) ufw status numbered;;
