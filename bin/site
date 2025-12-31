@@ -1932,18 +1932,13 @@ SUPCONF
                     if [ -n "$3" ] && [ -n "$4" ]; then
                         local schedule="$3"
                         local cmd="$4"
-                        local log_file="$5"
                         # site 内置命令不需要包装器（已内置日志），但需要完整路径
                         if [[ "$cmd" == "site backup"* ]] || [[ "$cmd" == "site ssl renew"* ]]; then
                             # cron 环境 PATH 不含 /usr/local/bin，需使用完整路径
                             local full_cmd="${cmd/site//usr/local/bin/site}"
                         else
-                            # 其他命令使用 site cron run 包装
-                            if [ -n "$log_file" ]; then
-                                local full_cmd="/usr/local/bin/site cron run \"$cmd\" \"$log_file\""
-                            else
-                                local full_cmd="/usr/local/bin/site cron run \"$cmd\""
-                            fi
+                            # 其他命令使用 site cron run 包装（自动生成日志路径）
+                            local full_cmd="/usr/local/bin/site cron run \"$cmd\""
                         fi
                         # 添加到 crontab
                         (crontab -l 2>/dev/null; echo "$schedule $full_cmd") | crontab -
@@ -1951,13 +1946,13 @@ SUPCONF
                         echo "  时间: $schedule"
                         echo "  命令: $full_cmd"
                     else
-                        echo "用法: site cron add \"<时间>\" \"<命令>\" [日志文件]"
+                        echo "用法: site cron add \"<时间>\" \"<命令>\""
+                        echo ""
+                        echo "日志自动保存到 /www/wwwlogs/cron/{站点}_{命令}.log"
                         echo ""
                         echo "示例:"
                         echo "  site cron add \"0 * * * *\" \"site backup db\""
-                        echo "  site cron add \"0 4 * * *\" \"site backup site\""
                         echo "  site cron add \"*/5 * * * *\" \"php /www/wwwroot/xxx/artisan schedule:run\""
-                        echo "  site cron add \"* * * * *\" \"php /www/wwwroot/xxx/artisan cron:open\" \"/www/wwwlogs/xxx_cron.log\""
                     fi
                     ;;
                 remove|rm)
