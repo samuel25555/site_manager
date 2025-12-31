@@ -7,7 +7,7 @@
 - 🖥️ **CLI 优先** - 命令行管理，高效便捷
 - 🌐 **Web 面板** - 可选的图形界面（默认关闭）
 - 📦 **软件管理** - 一键安装 Nginx/PHP/MySQL/Redis/Node.js/Docker
-- 🔒 **SSL 证书** - Let's Encrypt 免费证书自动申请续期
+- 🔒 **SSL 证书** - Let's Encrypt 免费证书，支持多账号 DNS 验证
 - 💾 **自动备份** - 支持 FTP 远程备份，自动清理旧备份
 - 🛡️ **安全管理** - 防火墙配置
 
@@ -61,8 +61,19 @@ site info <域名>               # 站点详情
 ### SSL 证书
 
 ```bash
-site ssl <域名>                # 申请 SSL 证书
-site ssl renew                 # 续期所有证书
+site ssl <域名>                # 申请 SSL 证书 (HTTP验证)
+site ssl <域名> --dns          # 申请 SSL 证书 (DNS验证)
+site ssl "d1,d2,d3" --dns      # 多域名证书申请
+site ssl list                  # 查看证书列表和状态
+site ssl renew                 # 续期证书 (>30天自动跳过)
+
+# 多账号管理 (支持不同域名使用不同 Cloudflare 账号)
+site ssl account list          # 查看 DNS 账号列表
+site ssl account add <别名>    # 添加 DNS 账号
+site ssl account remove <别名> # 删除 DNS 账号
+site ssl bind <域名> <别名>     # 绑定域名到账号
+site ssl unbind <域名>         # 解绑域名
+site ssl bindlist              # 查看域名绑定列表
 ```
 
 ### 软件管理
@@ -93,30 +104,28 @@ site redis restart|status
 ### 备份管理
 
 ```bash
-# 交互式备份（编号选择）
-site -m  # 选择 3) 备份管理
-
-# 命令行备份
 site backup <域名>             # 备份站点
+site backup db [数据库]         # 备份数据库
+site backup path <路径>        # 备份指定路径
+site backup list               # 查看备份列表
+site backup config             # 查看/修改备份配置 (FTP/保留策略)
 site restore <域名> <文件>      # 恢复站点
-site db backup [数据库]         # 备份数据库
 site db restore <库> <文件>     # 恢复数据库
 ```
 
-### 定时备份脚本
+### 计划任务管理
 
 ```bash
-# 备份数据库（保留10份）
-/opt/site_manager/bin/backup_cron.sh db 10
+site cron list                 # 查看计划任务列表
+site cron add <时间> <命令>     # 添加计划任务
+site cron remove <编号>        # 删除计划任务
+site cron log [日志文件]        # 查看任务日志
+site cron run <命令>           # 立即执行任务
 
-# 备份站点（保留7份）
-/opt/site_manager/bin/backup_cron.sh site 7
-
-# 备份指定路径（保留5份）
-/opt/site_manager/bin/backup_cron.sh path 5 /path/to/dir
-
-# 备份全部
-/opt/site_manager/bin/backup_cron.sh all 10 7
+# 常用定时任务示例
+site cron add "0 * * * *" "site backup db"              # 每小时备份数据库
+site cron add "0 4 * * *" "site backup path /www/wwwroot"  # 每天4点备份站点
+site cron add "0 3 * * *" "site ssl renew"              # 每天3点检查SSL续期
 ```
 
 ### 防火墙
@@ -146,7 +155,13 @@ site panel restart             # 重启面板
 ├── config/
 │   ├── site_manager.conf      # 主配置
 │   ├── backup.conf            # 备份配置（FTP等）
-│   └── backup_exclude.conf    # 备份排除规则
+│   ├── backup_exclude.conf    # 备份排除规则
+│   ├── dns_accounts.json      # DNS API 账号 (Cloudflare等)
+│   └── ssl_domains.json       # 域名与账号绑定
+├── scripts/
+│   ├── cron_wrapper.sh        # 计划任务包装器
+│   ├── certbot_cf_auth.sh     # Certbot DNS 验证 Hook
+│   └── certbot_cf_cleanup.sh  # Certbot DNS 清理 Hook
 ├── software/
 │   ├── list.json              # 软件列表
 │   └── install/               # 安装脚本
@@ -202,26 +217,30 @@ logs
 
 ## 定时任务
 
-安装后默认添加以下定时任务：
+使用 `site cron` 命令管理定时任务：
 
 ```bash
-# 每小时备份数据库，保留10份
-0 * * * * /opt/site_manager/bin/backup_cron.sh db 10
+# 查看任务列表
+site cron list
 
-# 每天凌晨3点备份站点，保留7份
-0 3 * * * /opt/site_manager/bin/backup_cron.sh site 7
-```
+# 添加任务 (自动包装日志)
+site cron add "0 * * * *" "site backup db"
+site cron add "0 3 * * *" "site ssl renew"
 
-查看/编辑定时任务：
-```bash
-crontab -e
+# 删除任务
+site cron remove 1
+
+# 查看日志
+site cron log
 ```
 
 ## 日志
 
-- 备份日志: `/var/log/site_manager/backup.log`
+- 备份日志: `/www/wwwlogs/site_manager/backup.log`
+- SSL 日志: `/www/wwwlogs/site_manager/ssl.log`
+- 计划任务日志: `/www/wwwlogs/cron.log` (或自定义)
 - 面板日志: `/tmp/panel.log`
-- Nginx 日志: `/var/log/nginx/sites/<域名>/`
+- Nginx 日志: `/www/wwwlogs/<域名>/`
 
 ## 更新
 
