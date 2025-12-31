@@ -1933,9 +1933,10 @@ SUPCONF
                         local schedule="$3"
                         local cmd="$4"
                         local log_file="$5"
-                        # site 内置命令不需要包装器（已内置日志）
+                        # site 内置命令不需要包装器（已内置日志），但需要完整路径
                         if [[ "$cmd" == "site backup"* ]] || [[ "$cmd" == "site ssl renew"* ]]; then
-                            local full_cmd="$cmd"
+                            # cron 环境 PATH 不含 /usr/local/bin，需使用完整路径
+                            local full_cmd="${cmd/site//usr/local/bin/site}"
                         else
                             # 其他命令使用包装器
                             if [ -n "$log_file" ]; then
