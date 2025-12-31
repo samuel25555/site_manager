@@ -1545,11 +1545,11 @@ show_help() {
     echo "  site rewrite <域名> <规则>  设置站点伪静态"
     echo ""
     echo "SSL证书:"
-    echo "  site ssl config         配置 Cloudflare DNS API"
-    echo "  site ssl <域名>         申请SSL证书 (HTTP验证)"
-    echo "  site ssl <域名> --dns   申请SSL证书 (DNS验证)"
-    echo "  site ssl <域名> --wildcard  申请泛域名证书"
-    echo "  site ssl renew          续期所有证书"
+    echo "  site ssl <域名> [--dns] [--wildcard]  申请证书"
+    echo "  site ssl account list/add/remove     管理DNS账号"
+    echo "  site ssl bind <域名> <账号>          绑定域名到账号"
+    echo "  site ssl list                        查看证书状态"
+    echo "  site ssl renew                       续期证书(>30天跳过)"
     echo ""
     echo "备份恢复:"
     echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
@@ -1674,10 +1674,40 @@ handle_cli() {
             ;;
         ssl) source /opt/site_manager/lib/ssl.sh 2>/dev/null || source "$SCRIPT_DIR/../lib/ssl.sh"
             case "$2" in
+                account)
+                    case "$3" in
+                        list|ls|"") ssl_account_list;;
+                        add) ssl_account_add "$4";;
+                        remove|rm) ssl_account_remove "$4";;
+                        *) echo "用法: site ssl account <list|add|remove> [别名]";;
+                    esac;;
+                bind) ssl_bind "$3" "$4";;
+                unbind) ssl_unbind "$3";;
+                bindlist) ssl_bindlist;;
+                list|ls) ssl_list;;
                 config) ssl_dns_config "$3" "$4";;
                 install) ssl_install;;
                 renew) ssl_renew;;
-                "") echo "用法: site ssl <域名> [--dns] [--wildcard]";;
+                "")
+                    echo "用法:"
+                    echo "  site ssl <域名> [--dns] [--wildcard]  申请证书"
+                    echo "  site ssl \"a.com,b.com\" --dns         多域名证书"
+                    echo ""
+                    echo "账号管理:"
+                    echo "  site ssl account list               查看账号"
+                    echo "  site ssl account add <别名>         添加账号"
+                    echo "  site ssl account remove <别名>      删除账号"
+                    echo ""
+                    echo "域名绑定:"
+                    echo "  site ssl bind <域名> <账号别名>      绑定域名到账号"
+                    echo "  site ssl unbind <域名>              解绑域名"
+                    echo "  site ssl bindlist                   查看绑定关系"
+                    echo ""
+                    echo "其他:"
+                    echo "  site ssl list                       查看证书状态"
+                    echo "  site ssl renew                      续期证书(>30天跳过)"
+                    echo "  site ssl config                     配置默认DNS账号"
+                    ;;
                 *) ssl_request "$2" "${@:3}";;
             esac;;
         backup)
@@ -1904,7 +1934,7 @@ SUPCONF
                         local cmd="$4"
                         local log_file="$5"
                         # site 内置命令不需要包装器（已内置日志）
-                        if [[ "$cmd" == "site backup"* ]]; then
+                        if [[ "$cmd" == "site backup"* ]] || [[ "$cmd" == "site ssl renew"* ]]; then
                             local full_cmd="$cmd"
                         else
                             # 其他命令使用包装器
