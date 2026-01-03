@@ -1,5 +1,6 @@
 #!/bin/bash
 source /opt/site_manager/software/install/lib.sh
+source /opt/site_manager/lib/tune.sh
 check_root
 
 ACTION="$1"
@@ -26,13 +27,20 @@ install_php() {
             ;;
     esac
 
-    # 配置 PHP-FPM
+    # 确保 www 用户存在
+    id www &>/dev/null || useradd -r -s /sbin/nologin www
+
+    # 生成优化配置
+    log_step "生成优化配置..."
     local fpm_conf="/etc/php/$VERSION/fpm/pool.d/www.conf"
     [ -f "$fpm_conf" ] && {
-        sed -i 's/^user = .*/user = www/' "$fpm_conf"
-        sed -i 's/^group = .*/group = www/' "$fpm_conf"
-        sed -i 's/^pm.max_children = .*/pm.max_children = 50/' "$fpm_conf"
+        cp "$fpm_conf" "${fpm_conf}.bak"
+        generate_php_fpm_conf "$VERSION" > "$fpm_conf"
     }
+
+    # 生成 OPcache 配置
+    local opcache_conf="/etc/php/$VERSION/fpm/conf.d/99-opcache-tuned.ini"
+    generate_opcache_conf > "$opcache_conf"
 
     local fpm_service="php${VERSION}-fpm"
     service_enable "$fpm_service"

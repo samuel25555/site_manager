@@ -1,5 +1,6 @@
 #!/bin/bash
 source /opt/site_manager/software/install/lib.sh
+source /opt/site_manager/lib/tune.sh
 check_root
 
 ACTION="$1"
@@ -51,6 +52,12 @@ install_mysql() {
             fi
             ;;
     esac
+
+    # 生成优化配置
+    log_step "生成优化配置..."
+    mkdir -p /var/log/mysql
+    chown mysql:mysql /var/log/mysql
+    generate_mariadb_conf > /etc/mysql/mariadb.conf.d/99-tuned.cnf
 
     # 启动服务
     service_enable mysql 2>/dev/null || service_enable mariadb 2>/dev/null

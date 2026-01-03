@@ -1,5 +1,6 @@
 #!/bin/bash
 source /opt/site_manager/software/install/lib.sh
+source /opt/site_manager/lib/tune.sh
 check_root
 
 ACTION="$1"
@@ -32,9 +33,16 @@ REPO
             ;;
     esac
 
-    mkdir -p /etc/nginx/sites-{available,enabled} /www/wwwroot /www/wwwlogs/nginx
-    grep -q "sites-enabled" /etc/nginx/nginx.conf || sed -i '/http {/a\    include /etc/nginx/sites-enabled/*;' /etc/nginx/nginx.conf
-    
+    mkdir -p /etc/nginx/sites-{available,enabled} /www/wwwroot /www/wwwlogs /www/vhost/nginx
+
+    # 生成优化配置
+    log_step "生成优化配置..."
+    cp /etc/nginx/nginx.conf /etc/nginx/nginx.conf.bak
+    generate_nginx_conf > /etc/nginx/nginx.conf
+
+    # 确保 www 用户存在
+    id www &>/dev/null || useradd -r -s /sbin/nologin www
+
     service_enable nginx
     service_start nginx
     firewall_allow 80; firewall_allow 443
