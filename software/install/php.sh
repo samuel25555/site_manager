@@ -13,8 +13,37 @@ install_php() {
     case "$PM" in
         apt)
             apt-get install -y apt-transport-https lsb-release ca-certificates
-            curl -fsSL https://packages.sury.org/php/apt.gpg | gpg --dearmor -o /etc/apt/keyrings/php.gpg 2>/dev/null
-            echo "deb [signed-by=/etc/apt/keyrings/php.gpg] https://packages.sury.org/php/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/php.list
+            # 国内镜像列表（按优先级）
+            local mirrors=(
+                "https://mirrors.ustc.edu.cn/sury/php"
+                "https://mirrors.tuna.tsinghua.edu.cn/sury/php"
+                "https://packages.sury.org/php"
+            )
+            local selected_mirror=""
+
+            # 尝试获取 GPG 密钥
+            for mirror in "${mirrors[@]}"; do
+                if curl -fsSL --connect-timeout 10 "${mirror}/apt.gpg" 2>/dev/null | gpg --dearmor -o /etc/apt/keyrings/php.gpg 2>/dev/null; then
+                    log_info "从 ${mirror} 获取 GPG 密钥成功"
+                    break
+                fi
+            done
+
+            # 测试镜像可用性并选择
+            for mirror in "${mirrors[@]}"; do
+                if curl -fsSL --connect-timeout 5 "${mirror}/dists/$(lsb_release -cs)/Release" &>/dev/null; then
+                    selected_mirror="$mirror"
+                    log_info "使用镜像: ${mirror}"
+                    break
+                fi
+            done
+
+            if [[ -z "$selected_mirror" ]]; then
+                log_error "所有 PHP 源都无法访问"
+                exit 1
+            fi
+
+            echo "deb [signed-by=/etc/apt/keyrings/php.gpg] ${selected_mirror}/ $(lsb_release -cs) main" > /etc/apt/sources.list.d/php.list
             apt-get update
             
             local pkgs=""
