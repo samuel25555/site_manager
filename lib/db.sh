@@ -3,15 +3,17 @@
 
 db_create() {
     local name="$1"
-    
+    local password="$2"
+
     check_root
-    
+
     if [ -z "$name" ]; then
-        log_error "用法: site db create <name>"
+        log_error "用法: site db create <name> [password]"
         return 1
     fi
-    
-    local password="$(random_string 16)"
+
+    # 如果没有指定密码，则自动生成
+    [ -z "$password" ] && password="$(random_string 16)"
     
     log_info "创建数据库: $name"
     

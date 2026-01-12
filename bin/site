@@ -54,7 +54,12 @@ get_mysql_args() {
     local args=""
     if [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASS" ]; then
         args="-u$MYSQL_USER -p$MYSQL_PASS"
+    elif [ -f "/root/.mysql_root_password" ]; then
+        # site_manager 安装的 MySQL/MariaDB
+        local pass=$(cat "/root/.mysql_root_password" 2>/dev/null)
+        [ -n "$pass" ] && args="-uroot -p$pass"
     elif [ -f "${MYSQL_DEFAULTS_FILE:-/www/server/panel/data/default.pl}" ]; then
+        # 宝塔面板的 MySQL
         local pass=$(cat "${MYSQL_DEFAULTS_FILE:-/www/server/panel/data/default.pl}" 2>/dev/null)
         [ -n "$pass" ] && args="-uroot -p$pass"
     fi
@@ -1801,13 +1806,13 @@ handle_cli() {
             fi
             ;;
         db) source /opt/site_manager/lib/db.sh; case "$2" in
-                create) db_create "$3";;
+                create) db_create "$3" "$4";;
                 drop) db_drop "$3";;
                 import) db_import "$3" "$4";;
                 export) db_export "$3";;
                 list) db_list;;
                 restore) if [ -n "$3" ] && [ -n "$4" ] && [ -f "$4" ]; then mysql_exec "$3" < "$4" && echo "恢复成功" || echo -e "${RED}恢复失败${NC}"; else echo "用法: site db restore <库> <文件>"; fi;;
-                *) echo "用法: site db <create|drop|import|export|list|restore>"; echo "备份请使用: site backup db [库名]";;
+                *) echo "用法: site db <create|drop|import|export|list|restore> [password]"; echo "备份请使用: site backup db [库名]";;
             esac;;
         nginx) case "$2" in
             reload) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
