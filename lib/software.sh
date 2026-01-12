@@ -144,6 +144,8 @@ software_install_php() {
         sed -i 's/^max_execution_time = .*/max_execution_time = 300/' "$php_ini"
         sed -i 's/^max_input_time = .*/max_input_time = 300/' "$php_ini"
         sed -i 's/^memory_limit = .*/memory_limit = 256M/' "$php_ini"
+        # 设置时区
+        sed -i 's/^;*date.timezone =.*/date.timezone = PRC/' "$php_ini"
     fi
 
     systemctl enable "php${version}-fpm"
