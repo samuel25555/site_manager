@@ -1767,6 +1767,13 @@ show_help() {
     echo "系统检查:"
     echo "  site check              健康检查 (PHP/Nginx/MySQL/SSL/磁盘等)"
     echo ""
+    echo "监控告警:"
+    echo "  site monitor config     查看/配置监控"
+    echo "  site monitor config telegram <token> <chat_id>  配置Telegram"
+    echo "  site monitor check      立即执行检查"
+    echo "  site monitor start      启动定时监控"
+    echo "  site monitor stop       停止定时监控"
+    echo ""
     echo "软件管理:"
     echo "  site soft               查看已安装软件"
     echo "  site install <软件> [版本]  安装软件"
@@ -2269,6 +2276,135 @@ SUPCONF
                 *) ufw status;;
             esac;;
         check) do_health_check;;
+        monitor)
+            source /opt/site_manager/lib/monitor.sh 2>/dev/null
+            local monitor_conf="/opt/site_manager/config/monitor.conf"
+            case "$2" in
+                config)
+                    case "$3" in
+                        "")
+                            show_monitor_status
+                            ;;
+                        telegram)
+                            if [ -n "$4" ] && [ -n "$5" ]; then
+                                sed -i "s|^TG_BOT_TOKEN=.*|TG_BOT_TOKEN=\"$4\"|" "$monitor_conf"
+                                sed -i "s|^TG_CHAT_ID=.*|TG_CHAT_ID=\"$5\"|" "$monitor_conf"
+                                echo -e "${GREEN}Telegram 配置已保存${NC}"
+                                # 发送测试消息
+                                read -p "发送测试消息? (y/n) [y]: " test_msg
+                                if [ "$test_msg" != "n" ]; then
+                                    source "$monitor_conf"
+                                    source /opt/site_manager/lib/notification.sh
+                                    if notify_test; then
+                                        echo -e "${GREEN}测试消息发送成功${NC}"
+                                    else
+                                        echo -e "${RED}测试消息发送失败${NC}"
+                                    fi
+                                fi
+                            else
+                                echo "用法: site monitor config telegram <bot_token> <chat_id>"
+                            fi
+                            ;;
+                        interval)
+                            if [ -n "$4" ]; then
+                                sed -i "s|^MONITOR_INTERVAL=.*|MONITOR_INTERVAL=$4|" "$monitor_conf"
+                                echo -e "${GREEN}检查间隔已设为 $4 分钟${NC}"
+                            else
+                                echo "用法: site monitor config interval <分钟>"
+                            fi
+                            ;;
+                        hostname)
+                            if [ -n "$4" ]; then
+                                sed -i "s|^MONITOR_HOST_NAME=.*|MONITOR_HOST_NAME=\"$4\"|" "$monitor_conf"
+                                echo -e "${GREEN}主机名已设为 $4${NC}"
+                            else
+                                echo "用法: site monitor config hostname <名称>"
+                            fi
+                            ;;
+                        enable)
+                            sed -i 's|^MONITOR_ENABLED=.*|MONITOR_ENABLED=true|' "$monitor_conf"
+                            echo -e "${GREEN}监控已启用${NC}"
+                            ;;
+                        disable)
+                            sed -i 's|^MONITOR_ENABLED=.*|MONITOR_ENABLED=false|' "$monitor_conf"
+                            echo -e "${YELLOW}监控已禁用${NC}"
+                            ;;
+                        *)
+                            echo "用法:"
+                            echo "  site monitor config                    查看配置"
+                            echo "  site monitor config telegram <token> <chat_id>  配置Telegram"
+                            echo "  site monitor config interval <分钟>    设置检查间隔"
+                            echo "  site monitor config hostname <名称>    设置主机标识"
+                            echo "  site monitor config enable/disable     启用/禁用监控"
+                            ;;
+                    esac
+                    ;;
+                check)
+                    echo -e "${CYAN}执行监控检查...${NC}"
+                    run_all_checks
+                    local result=$?
+                    if [ $result -eq 0 ]; then
+                        echo -e "${GREEN}检查完成，无异常${NC}"
+                    else
+                        echo -e "${YELLOW}检查完成，发现 $result 个问题${NC}"
+                    fi
+                    ;;
+                status)
+                    show_monitor_status
+                    ;;
+                log)
+                    local lines="${3:-50}"
+                    local log_file="/www/wwwlogs/site_manager/monitor.log"
+                    if [ -f "$log_file" ]; then
+                        tail -n "$lines" "$log_file"
+                    else
+                        echo "暂无日志"
+                    fi
+                    ;;
+                start)
+                    # 添加定时任务
+                    source "$monitor_conf"
+                    local interval="${MONITOR_INTERVAL:-5}"
+                    local cron_cmd="/opt/site_manager/scripts/monitor_check.sh"
+
+                    # 检查是否已存在
+                    if crontab -l 2>/dev/null | grep -q "monitor_check.sh"; then
+                        echo -e "${YELLOW}监控任务已存在${NC}"
+                    else
+                        (crontab -l 2>/dev/null; echo "*/${interval} * * * * ${cron_cmd} >/dev/null 2>&1") | crontab -
+                        sed -i 's|^MONITOR_ENABLED=.*|MONITOR_ENABLED=true|' "$monitor_conf"
+                        echo -e "${GREEN}监控已启动 (每 ${interval} 分钟检查一次)${NC}"
+                    fi
+                    ;;
+                stop)
+                    # 移除定时任务
+                    crontab -l 2>/dev/null | grep -v "monitor_check.sh" | crontab -
+                    sed -i 's|^MONITOR_ENABLED=.*|MONITOR_ENABLED=false|' "$monitor_conf"
+                    echo -e "${YELLOW}监控已停止${NC}"
+                    ;;
+                test)
+                    # 发送测试通知
+                    source "$monitor_conf"
+                    source /opt/site_manager/lib/notification.sh
+                    echo -n "发送测试消息... "
+                    if notify_test; then
+                        echo -e "${GREEN}成功${NC}"
+                    else
+                        echo -e "${RED}失败${NC}"
+                    fi
+                    ;;
+                *)
+                    echo "用法:"
+                    echo "  site monitor config     查看/修改配置"
+                    echo "  site monitor check      立即执行检查"
+                    echo "  site monitor status     查看监控状态"
+                    echo "  site monitor log [行数] 查看告警日志"
+                    echo "  site monitor start      启动定时监控"
+                    echo "  site monitor stop       停止定时监控"
+                    echo "  site monitor test       发送测试通知"
+                    ;;
+            esac
+            ;;
         soft) soft_list;;
         install) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" install "$3" || echo "未知软件: $2"; } || echo "用法: site install <软件> [版本]";;
         uninstall) [ -n "$2" ] && { local script="${2}.sh"; [ -f "$SOFTWARE_DIR/install/$script" ] && bash "$SOFTWARE_DIR/install/$script" uninstall "$3" || echo "未知软件: $2"; } || echo "用法: site uninstall <软件> [版本]";;
