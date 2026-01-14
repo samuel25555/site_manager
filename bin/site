@@ -2078,24 +2078,32 @@ handle_cli() {
                 *) echo "用法: site db <create|drop|import|export|list|restore> [password]"; echo "备份请使用: site backup db [库名]";;
             esac;;
         nginx) case "$2" in
+            start) systemctl start nginx && echo -e "${GREEN}Nginx 已启动${NC}" || echo -e "${RED}Nginx 启动失败${NC}";;
+            stop) systemctl stop nginx && echo -e "${GREEN}Nginx 已停止${NC}" || echo -e "${RED}Nginx 停止失败${NC}";;
             reload) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
             restart) systemctl restart nginx && echo -e "${GREEN}Nginx 已重启${NC}" || echo -e "${RED}Nginx 重启失败${NC}";;
             status) systemctl status nginx --no-pager;;
-            *) systemctl reload nginx && echo -e "${GREEN}Nginx 已重载${NC}" || echo -e "${RED}Nginx 重载失败${NC}";;
+            *) echo "用法: site nginx start|stop|restart|reload|status";;
             esac;;
         php) case "$2" in
+            start) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl start "php${v}-fpm" 2>/dev/null && echo -e "${GREEN}PHP $v FPM 已启动${NC}"; done;;
+            stop) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl stop "php${v}-fpm" 2>/dev/null && echo -e "${GREEN}PHP $v FPM 已停止${NC}"; done;;
             restart) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl restart "php${v}-fpm" 2>/dev/null && echo -e "${GREEN}PHP $v FPM 已重启${NC}"; done;;
             status) for v in 7.4 8.0 8.1 8.2 8.3; do systemctl is-active "php${v}-fpm" 2>/dev/null | grep -q active && echo "PHP $v FPM: 运行中"; done;;
-            *) php -v;;
+            *) echo "用法: site php start|stop|restart|status";;
             esac;;
         mysql) case "$2" in
+            start) systemctl start mysql 2>/dev/null && echo -e "${GREEN}MySQL 已启动${NC}" || systemctl start mariadb 2>/dev/null && echo -e "${GREEN}MariaDB 已启动${NC}" || echo -e "${RED}数据库启动失败${NC}";;
+            stop) systemctl stop mysql 2>/dev/null && echo -e "${GREEN}MySQL 已停止${NC}" || systemctl stop mariadb 2>/dev/null && echo -e "${GREEN}MariaDB 已停止${NC}" || echo -e "${RED}数据库停止失败${NC}";;
             restart) systemctl restart mysql && echo -e "${GREEN}MySQL 已重启${NC}" || systemctl restart mariadb && echo -e "${GREEN}MariaDB 已重启${NC}" || echo -e "${RED}数据库重启失败${NC}";;
             status) systemctl status mysql --no-pager 2>/dev/null || systemctl status mariadb --no-pager;;
-            *) systemctl status mysql --no-pager 2>/dev/null || systemctl status mariadb --no-pager;;
+            *) echo "用法: site mysql start|stop|restart|status";;
             esac;;
         redis) case "$2" in
+            start) systemctl start redis-server && echo -e "${GREEN}Redis 已启动${NC}" || echo -e "${RED}Redis 启动失败${NC}";;
+            stop) systemctl stop redis-server && echo -e "${GREEN}Redis 已停止${NC}" || echo -e "${RED}Redis 停止失败${NC}";;
             restart) systemctl restart redis-server && echo -e "${GREEN}Redis 已重启${NC}" || echo -e "${RED}Redis 重启失败${NC}";;
-            *) systemctl status redis-server --no-pager;;
+            *) echo "用法: site redis start|stop|restart|status";;
             esac;;
         supervisor|sv)
             if ! command -v supervisorctl &>/dev/null; then
