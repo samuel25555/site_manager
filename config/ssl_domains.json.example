@@ -1,0 +1,8 @@
+{
+  "example.com": {
+    "alias": "account1"
+  },
+  "another-domain.com": {
+    "alias": "account2"
+  }
+}

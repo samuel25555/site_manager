@@ -1,0 +1,14 @@
+{
+  "cloudflare": [
+    {
+      "alias": "account1",
+      "email": "your-email@example.com",
+      "api_key": "your-cloudflare-global-api-key"
+    },
+    {
+      "alias": "account2",
+      "email": "another-email@example.com",
+      "api_key": "another-api-key"
+    }
+  ]
+}

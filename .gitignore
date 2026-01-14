@@ -1,4 +1,14 @@
-
+# 编译文件
 panel/site_manager
 panel/site_manager_panel
 panel/site_manager_panel.bak
+
+# 敏感配置文件 - 每个服务器独立维护
+config/dns_accounts.json
+config/ssl_domains.json
+config/cloudflare*.ini
+config/backup.conf
+config/monitor.conf
+
+# 保留模板文件
+!config/*.example

@@ -64,13 +64,10 @@ ssl_account_add() {
         return 1
     fi
 
-    # 生成唯一ID
-    local id=$(cat /proc/sys/kernel/random/uuid | tr -d '-' | head -c 16)
-
     # 添加到配置
     local tmp=$(mktemp)
-    jq --arg id "$id" --arg alias "$alias" --arg email "$email" --arg key "$api_key" \
-       '.cloudflare += [{"id": $id, "alias": $alias, "email": $email, "api_key": $key}]' \
+    jq --arg alias "$alias" --arg email "$email" --arg key "$api_key" \
+       '.cloudflare += [{"alias": $alias, "email": $email, "api_key": $key}]' \
        "$DNS_ACCOUNTS_FILE" > "$tmp" && mv "$tmp" "$DNS_ACCOUNTS_FILE"
 
     # 创建凭据文件
@@ -114,6 +111,27 @@ ssl_account_remove() {
 
 # ==================== 域名绑定 ====================
 
+# 生成 Cloudflare INI 凭据文件
+_generate_cloudflare_ini() {
+    local alias="$1"
+    local cred_file="$CONFIG_DIR/cloudflare_${alias}.ini"
+
+    # 如果文件已存在，跳过
+    [ -f "$cred_file" ] && return 0
+
+    # 从配置获取凭据
+    local email=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .email' "$DNS_ACCOUNTS_FILE")
+    local api_key=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .api_key' "$DNS_ACCOUNTS_FILE")
+
+    if [ -n "$email" ] && [ -n "$api_key" ]; then
+        cat > "$cred_file" << EOF
+dns_cloudflare_email = $email
+dns_cloudflare_api_key = $api_key
+EOF
+        chmod 600 "$cred_file"
+    fi
+}
+
 # 提取根域名
 _extract_root_domain() {
     local domain="$1"
@@ -142,14 +160,14 @@ ssl_bind() {
         return 1
     fi
 
-    # 获取账号ID
-    local account_id=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .id' "$DNS_ACCOUNTS_FILE")
-
-    # 更新绑定
+    # 更新绑定（只存储 alias）
     local tmp=$(mktemp)
-    jq --arg d "$domain" --arg id "$account_id" --arg alias "$alias" \
-       '. + {($d): {"account_id": $id, "alias": $alias}}' \
+    jq --arg d "$domain" --arg alias "$alias" \
+       '. + {($d): {"alias": $alias}}' \
        "$SSL_DOMAINS_FILE" > "$tmp" && mv "$tmp" "$SSL_DOMAINS_FILE"
+
+    # 自动生成对应的 cloudflare ini 文件
+    _generate_cloudflare_ini "$alias"
 
     echo -e "${GREEN}已绑定: $domain -> $alias${NC}"
 }

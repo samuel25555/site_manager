@@ -1,0 +1,6 @@
+# Cloudflare API credentials for certbot
+# Copy this file to cloudflare_<alias>.ini and fill in your credentials
+# Make sure to set permissions: chmod 600 cloudflare_<alias>.ini
+
+dns_cloudflare_email = your-email@example.com
+dns_cloudflare_api_key = your-cloudflare-global-api-key
