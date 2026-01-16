@@ -248,9 +248,26 @@ ssl_install() {
 
     if command_exists certbot; then
         log_success "certbot 安装成功"
+        ssl_setup_hooks
     else
         log_error "certbot 安装失败"
         return 1
+    fi
+}
+
+# 配置 Certbot Hooks
+ssl_setup_hooks() {
+    local hook_dir="/etc/letsencrypt/renewal-hooks/post"
+    local hook_script="$hook_dir/nginx-reload.sh"
+    local source_script="$ROOT_DIR/scripts/certbot_post_hook.sh"
+
+    if [ -f "$source_script" ]; then
+        mkdir -p "$hook_dir"
+        if [ ! -f "$hook_script" ]; then
+            cp "$source_script" "$hook_script"
+            chmod +x "$hook_script"
+            log_info "已安装 Certbot Post-Hook: $hook_script"
+        fi
     fi
 }
 
