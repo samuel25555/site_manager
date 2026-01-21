@@ -533,6 +533,7 @@ _do_site_create() {
     local domain="$1"
     local type="$2"
     local php_version="$3"
+    local custom_root="$4"
 
     # 验证域名格式
     validate_domain "$domain" || return 1
@@ -553,20 +554,32 @@ _do_site_create() {
         fi
     fi
 
-    # 创建目录（已有项目则跳过默认文件）
-    local is_empty=true
-    [ -d "$site_path" ] && [ -n "$(ls -A "$site_path" 2>/dev/null)" ] && is_empty=false
+    local root=""
 
-    if [ "$type" = "php" ]; then
-        mkdir -p "$site_path/public"
-        local root="$site_path/public"
-        [ "$is_empty" = true ] && echo "<?php phpinfo();" > "$root/index.php"
+    # 如果指定了自定义目录
+    if [ -n "$custom_root" ]; then
+        if [ ! -d "$custom_root" ]; then
+            echo -e "${RED}指定的目录不存在: $custom_root${NC}"
+            return 1
+        fi
+        root="$custom_root"
+        echo -e "${YELLOW}使用自定义目录: $root${NC}"
     else
-        mkdir -p "$site_path"
-        local root="$site_path"
-        [ "$is_empty" = true ] && echo "<h1>Welcome to $domain</h1>" > "$root/index.html"
+        # 创建目录（已有项目则跳过默认文件）
+        local is_empty=true
+        [ -d "$site_path" ] && [ -n "$(ls -A "$site_path" 2>/dev/null)" ] && is_empty=false
+
+        if [ "$type" = "php" ]; then
+            mkdir -p "$site_path/public"
+            root="$site_path/public"
+            [ "$is_empty" = true ] && echo "<?php phpinfo();" > "$root/index.php"
+        else
+            mkdir -p "$site_path"
+            root="$site_path"
+            [ "$is_empty" = true ] && echo "<h1>Welcome to $domain</h1>" > "$root/index.html"
+        fi
+        chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
     fi
-    chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
 
     # 生成配置
     cat > "$conf_path" << NGINX
@@ -1739,7 +1752,7 @@ show_help() {
     echo ""
     echo "站点管理:"
     echo "  site list               查看所有站点"
-    echo "  site create <域名> <类型>  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
+    echo "  site create <域名> <类型> [--root <目录>]  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
     echo "  site delete <域名> [--config|--full|--backup]  删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
@@ -1818,7 +1831,11 @@ handle_cli() {
         list) site_list;;
         create) [ -n "$2" ] && [ -n "$3" ] && {
             domain="$2"; type_arg="$3"
-            local type="" php_version="" port=""
+            local type="" php_version="" port="" custom_root=""
+            # 检查 --root 参数
+            if [ "$4" = "--root" ] && [ -n "$5" ]; then
+                custom_root="$5"
+            fi
             # 解析类型参数
             if [[ "$type_arg" =~ ^php([0-9])([0-9]+)$ ]]; then
                 type="php"
@@ -1839,8 +1856,8 @@ handle_cli() {
                 echo "无效类型: $type_arg (支持: php73/php80/php83/static/node/pm2/python/docker/proxy)"
                 exit 1
             fi
-            _do_site_create "$domain" "$type" "$php_version"
-        } || echo "用法: site create <域名> <类型> (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
+            _do_site_create "$domain" "$type" "$php_version" "$custom_root"
+        } || echo "用法: site create <域名> <类型> [--root <目录>] (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
         delete)
             if [ -z "$2" ]; then
                 echo "用法: site delete <域名> [选项]"
