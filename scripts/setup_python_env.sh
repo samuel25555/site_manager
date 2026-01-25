@@ -46,13 +46,21 @@ fi
 # 2. 创建系统级 Python 环境
 if [ -d "$PYENV_DIR" ]; then
     log_warn "Python 环境已存在: $PYENV_DIR"
-    read -p "是否重新创建？(y/N): " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
+
+    # 检查是否强制重建
+    if [ "${FORCE_REBUILD:-}" = "true" ]; then
+        log_info "强制重建环境..."
         rm -rf "$PYENV_DIR"
     else
-        log_info "跳过创建"
-        exit 0
+        # 交互式询问
+        read -p "是否重新创建？(y/N): " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            rm -rf "$PYENV_DIR"
+        else
+            log_info "跳过创建，使用现有环境"
+            exit 0
+        fi
     fi
 fi
 

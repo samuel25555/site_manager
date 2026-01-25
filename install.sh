@@ -590,31 +590,36 @@ install_docker() {
 }
 
 #---------------------------------------
-# 安装 Certbot
+# 配置系统级 Python 环境（包含 Certbot）
 #---------------------------------------
-install_certbot() {
-    if ! $INSTALL_CERTBOT; then return; fi
-
+setup_python_environment() {
     echo ""
-    # 检测是否已安装
-    if command -v certbot &>/dev/null; then
-        check_installed "Certbot" "$(certbot --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" && return
+    log_info "配置 Site Manager 系统级 Python 环境..."
+
+    # 检查 pyenv 是否已存在
+    if [ -d "/opt/site_manager/pyenv" ]; then
+        log_warn "Python 环境已存在"
+        return 0
     fi
 
-    log_info "安装 Certbot..."
+    # 如果是本地模式，直接运行脚本（自动化模式）
+    if [ "$LOCAL_MODE" = true ]; then
+        FORCE_REBUILD=false bash "$SCRIPT_DIR/scripts/setup_python_env.sh" || { log_error "Python 环境配置失败"; exit 1; }
+    else
+        # 远程模式：需要先下载脚本
+        log_error "远程模式暂不支持，请先克隆仓库到本地"
+        exit 1
+    fi
 
-    # 安装依赖
-    apt-get install -y -qq python3 python3-venv libaugeas0 > /dev/null 2>&1 || { log_error "Certbot 依赖安装失败"; exit 1; }
+    log_success "Python 环境配置完成（包含 Certbot）"
+}
 
-    # 使用虚拟环境安装 Certbot
-    python3 -m venv /opt/certbot > /dev/null 2>&1
-    /opt/certbot/bin/pip install --upgrade pip > /dev/null 2>&1
-    /opt/certbot/bin/pip install certbot certbot-dns-cloudflare > /dev/null 2>&1 || { log_error "Certbot 安装失败"; exit 1; }
-
-    # 创建符号链接
-    ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
-
-    log_success "Certbot 安装完成"
+#---------------------------------------
+# 安装 Certbot（已集成到 pyenv，保留此函数用于兼容性）
+#---------------------------------------
+install_certbot() {
+    # Certbot 现在由 setup_python_environment 统一安装
+    return 0
 }
 
 #---------------------------------------
@@ -1020,8 +1025,8 @@ main() {
     install_database
     install_redis
     install_supervisor
-    install_certbot
     install_uv
+    setup_python_environment  # 配置 pyenv 环境（包含 Certbot）
 
     # 可选软件
     install_nodejs
