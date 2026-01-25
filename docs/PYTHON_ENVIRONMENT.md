@@ -51,7 +51,12 @@ site-pip install package_name
 # 3. 查看已安装包
 site-pip list
 
-# 4. 激活环境（交互式使用）
+# 4. SSL 证书管理
+certbot --version                    # 查看版本
+certbot certificates                 # 查看证书
+site ssl <域名> --dns                # 推荐：使用 site 命令管理
+
+# 5. 激活环境（交互式使用）
 source /opt/site_manager/pyenv/bin/activate
 ```
 
@@ -65,6 +70,11 @@ source /opt/site_manager/pyenv/bin/activate
 - `pyyaml` - YAML 解析
 - `click` - CLI 工具框架
 - `jinja2` - 模板引擎
+
+SSL 证书管理：
+
+- `certbot` - Let's Encrypt 证书自动化
+- `certbot-dns-cloudflare` - Cloudflare DNS 验证插件
 
 扩展包（按需安装）：
 
@@ -151,6 +161,11 @@ site create myapp.com python
 2. **避免安装太多包** - 只安装管理工具真正需要的
 3. **定期更新** - 使用 `site-pip install --upgrade <package>` 更新包
 4. **记录依赖** - 安装新包后运行 `site-pip freeze > /opt/site_manager/pyenv/requirements.txt`
+5. **Certbot 集成优势**：
+   - 统一依赖管理：certbot 及其插件由 pyenv 统一管理
+   - 避免系统污染：不依赖系统 Python 或 snap
+   - 版本控制：可自由升级/降级 certbot 版本
+   - 插件灵活性：轻松安装各种 DNS 验证插件
 
 ### 项目级环境
 

@@ -78,6 +78,12 @@ uv pip install \
 
 log_info "基础依赖安装完成"
 
+# 安装 Certbot（SSL 证书管理）
+log_info "安装 Certbot..."
+uv pip install certbot certbot-dns-cloudflare
+
+log_info "Certbot 安装完成: $(source $PYENV_DIR/bin/activate && certbot --version)"
+
 # 4. 保存已安装包列表
 uv pip freeze > "$PYENV_DIR/requirements.txt"
 log_info "已保存包列表: $PYENV_DIR/requirements.txt"
@@ -93,24 +99,36 @@ exec "$PYENV_DIR/bin/python" "\$@"
 EOF
 chmod +x "/usr/local/bin/site-python"
 
-# pip 包装器
-cat > "/usr/local/bin/site-pip" << EOF
+# pip 包装器（使用 uv pip）
+cat > "/usr/local/bin/site-pip" << 'EOF'
 #!/bin/bash
 # Site Manager 系统级 pip
-exec "$PYENV_DIR/bin/pip" "\$@"
+source /opt/site_manager/pyenv/bin/activate
+exec uv pip "$@"
 EOF
 chmod +x "/usr/local/bin/site-pip"
+
+# certbot 包装器
+cat > "/usr/local/bin/certbot" << 'EOF'
+#!/bin/bash
+# Site Manager Certbot 包装器（使用 pyenv 环境）
+exec /opt/site_manager/pyenv/bin/certbot "$@"
+EOF
+chmod +x "/usr/local/bin/certbot"
 
 log_step "配置完成！"
 echo ""
 log_info "环境路径: $PYENV_DIR"
 log_info "Python 版本: $($PYENV_DIR/bin/python --version)"
+log_info "Certbot 版本: $(source $PYENV_DIR/bin/activate && certbot --version)"
 echo ""
 log_info "使用方法："
 echo "  1. 使用系统级 Python: site-python your_script.py"
 echo "  2. 安装包: site-pip install <package>"
 echo "  3. 查看已安装: site-pip list"
-echo "  4. 激活环境: source $PYENV_DIR/bin/activate"
+echo "  4. SSL 证书: certbot (或 site ssl 命令)"
+echo "  5. 激活环境: source $PYENV_DIR/bin/activate"
 echo ""
 log_info "已安装的包："
-"$PYENV_DIR/bin/pip" list --format=columns
+source "$PYENV_DIR/bin/activate"
+uv pip list
