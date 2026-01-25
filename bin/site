@@ -888,30 +888,70 @@ soft_list() {
     echo ""
     printf "%-12s %-10s %-10s %s\n" "软件" "版本" "状态" "描述"
     printf "%-12s %-10s %-10s %s\n" "----" "----" "----" "----"
-    
-    # 检查各软件状态
-    local items=("nginx:/usr/sbin/nginx" "php:/usr/bin/php" "mysql:/usr/bin/mysql" "redis:/usr/bin/redis-server" "nodejs:/usr/bin/node" "docker:/usr/bin/docker" "composer:/usr/local/bin/composer")
-    
-    for item in "${items[@]}"; do
-        local name="${item%%:*}"
-        local check="${item##*:}"
-        local version="-"
-        local status="${RED}未安装${NC}"
-        
-        if [ -f "$check" ] || [ -x "$check" ]; then
-            status="${GREEN}已安装${NC}"
-            case "$name" in
-                nginx) version=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
-                php) version=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
-                mysql) version=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
-                redis) version=$(redis-server --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
-                nodejs) version=$(node --version 2>/dev/null | tr -d 'v');;
-                docker) version=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
-                composer) version=$(composer --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
-            esac
-        fi
-        printf "%-12s %-10s %-10b\n" "$name" "${version:-?}" "$status"
-    done
+
+    # 从 list.json 读取软件列表
+    local SOFTWARE_LIST="$ROOT_DIR/software/list.json"
+    if [ ! -f "$SOFTWARE_LIST" ]; then
+        echo -e "${RED}错误: 找不到软件列表文件${NC}"
+        return 1
+    fi
+
+    # 使用 jq 或 python 解析 JSON（优先 jq）
+    if command -v jq &>/dev/null; then
+        # 使用 jq 解析
+        while IFS='|' read -r name checks; do
+            local version="-"
+            local status="${RED}未安装${NC}"
+
+            # 检查软件是否安装
+            if [ -n "$checks" ] && [ -f "$checks" ]; then
+                status="${GREEN}已安装${NC}"
+                case "$name" in
+                    nginx) version=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    php) version=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    mysql) version=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    redis) version=$(redis-server --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    nodejs) version=$(node --version 2>/dev/null | tr -d 'v');;
+                    docker) version=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    composer) version=$(composer --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    certbot) version=$(certbot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    supervisor) version=$(supervisorctl version 2>/dev/null);;
+                    uv) version=$(uv --version 2>/dev/null | awk '{print $2}');;
+                esac
+            fi
+            printf "%-12s %-10s %-10b\n" "$name" "${version:-?}" "$status"
+        done < <(jq -r '.[] | "\(.name)|\(.checks)"' "$SOFTWARE_LIST")
+    else
+        # 使用 python 作为备选
+        python3 -c "
+import json
+with open('$SOFTWARE_LIST') as f:
+    data = json.load(f)
+    for item in data:
+        print(f\"{item['name']}|{item.get('checks', '')}\")
+" | while IFS='|' read -r name checks; do
+            local version="-"
+            local status="${RED}未安装${NC}"
+
+            # 检查软件是否安装
+            if [ -n "$checks" ] && [ -f "$checks" ]; then
+                status="${GREEN}已安装${NC}"
+                case "$name" in
+                    nginx) version=$(nginx -v 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    php) version=$(php -v 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    mysql) version=$(mysql --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    redis) version=$(redis-server --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    nodejs) version=$(node --version 2>/dev/null | tr -d 'v');;
+                    docker) version=$(docker --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    composer) version=$(composer --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+');;
+                    certbot) version=$(certbot --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1);;
+                    supervisor) version=$(supervisorctl version 2>/dev/null);;
+                    uv) version=$(uv --version 2>/dev/null | awk '{print $2}');;
+                esac
+            fi
+            printf "%-12s %-10s %-10b\n" "$name" "${version:-?}" "$status"
+        done
+    fi
     echo ""
 }
 
