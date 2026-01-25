@@ -1,0 +1,14 @@
+# Cloudflare DNS API 凭据模板
+# 复制此文件为 cloudflare_<别名>.ini 并填写实际凭据
+# 例如：cloudflare_main.ini, cloudflare_backup.ini
+
+# 使用 Global API Key 方式（推荐）
+dns_cloudflare_email = your_email@example.com
+dns_cloudflare_api_key = your_global_api_key_here
+
+# 或者使用 API Token 方式（二选一）
+# dns_cloudflare_api_token = your_api_token_here
+
+# 获取方式：
+# 1. Global API Key: https://dash.cloudflare.com/profile/api-tokens
+# 2. API Token: https://dash.cloudflare.com/profile/api-tokens (需要 DNS Edit 权限)

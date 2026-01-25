@@ -1,0 +1,21 @@
+# 备份配置模板
+# 复制此文件为 backup.conf 并修改相应配置
+
+BACKUP_DIR="/www/backup"
+
+# 默认备份目录（path命令不带参数时使用）
+DEFAULT_BACKUP_PATH="/www/wwwroot"
+
+# 保留份数
+DB_KEEP=51
+SITE_KEEP=7
+PATH_KEEP=7
+
+# FTP配置
+FTP_ENABLED=false  # 设置为 true 启用 FTP 远程备份
+FTP_HOST="ftp.example.com"
+FTP_PORT=21
+FTP_USER="your_ftp_user"
+FTP_PASS="your_ftp_password"
+FTP_PATH="/backup"  # 建议使用服务器标识，如 /SERVER1, /SERVER2
+FTP_DELETE_LOCAL=false

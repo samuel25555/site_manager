@@ -10,16 +10,10 @@ check_root
 log_step "安装 Certbot..."
 
 # 安装 Certbot
+# 注意：使用系统包而不是 pip 安装，避免 5.x 版本的 DNS 验证 bug
+# Debian/Ubuntu 系统包提供的是稳定的 2.x 版本
 $PM_UPDATE
-$PM_INSTALL python3 python3-venv libaugeas0
-
-# 安装 Certbot 和 Cloudflare 插件
-python3 -m venv /opt/certbot
-/opt/certbot/bin/pip install --upgrade pip
-/opt/certbot/bin/pip install certbot certbot-dns-cloudflare
-
-# 创建符号链接
-ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+$PM_INSTALL python3-certbot python3-certbot-dns-cloudflare python3-certbot-nginx jq
 
 # 验证安装
 if ! certbot --version &>/dev/null; then

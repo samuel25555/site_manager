@@ -12,3 +12,4 @@ config/monitor.conf
 
 # 保留模板文件
 !config/*.example
+!config/*.template

@@ -45,6 +45,7 @@ log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 log_step() { echo -e "${CYAN}>>> $1${NC}"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1"; }
 
 # ========== 检查函数 ==========
 check_root() { [ "$EUID" -ne 0 ] && log_error "请使用 root 权限运行" && exit 1; }
