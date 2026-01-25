@@ -76,15 +76,22 @@ cleanup() {
 backup_db_one() {
     local db="$1" keep="${2:-$DB_KEEP}"
     [ -z "$MYSQL_PASS" ] && { log "错误: 未找到MySQL密码"; return 1; }
-    
-    local file="$DB_BACKUP_DIR/${db}_$(date +%Y%m%d_%H%M%S).sql"
+
+    # 兼容宝塔：每个数据库独立子目录
+    local db_dir="$DB_BACKUP_DIR/mysql/${db}"
+    mkdir -p "$db_dir"
+
+    # 兼容宝塔：文件名格式 {db}_YYYY-MM-DD_HH-MM-SS_mysql_data.sql.gz
+    local file="$db_dir/${db}_$(date +%Y-%m-%d_%H-%M-%S)_mysql_data.sql"
     mysqldump -u"$MYSQL_USER" -p"$MYSQL_PASS" --single-transaction --quick "$db" > "$file" 2>/dev/null
-    
+
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         gzip -f "$file"
         log "备份成功: $db ($(du -h "${file}.gz" | cut -f1))"
-        upload_ftp "${file}.gz" "database"
-        cleanup "$DB_BACKUP_DIR" "${db}_" "$keep"
+        # 兼容宝塔：FTP上传到 database/mysql/{db}/ 子目录
+        upload_ftp "${file}.gz" "database/mysql/${db}"
+        # 兼容宝塔：清理特定数据库子目录下的旧备份
+        cleanup "$db_dir" "${db}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $db"; return 1
     fi
@@ -114,16 +121,23 @@ backup_site_one() {
     local site="$1" keep="${2:-$SITE_KEEP}"
     local site_path="$SITES_DIR/$site"
     [ ! -d "$site_path" ] && { log "错误: 网站不存在 $site"; return 1; }
-    
+
+    # 兼容宝塔：每个站点独立子目录
+    local site_dir="$SITE_BACKUP_DIR/${site}"
+    mkdir -p "$site_dir"
+
     local exclude_args=$(get_exclude_args)
-    local file="$SITE_BACKUP_DIR/${site}_$(date +%Y%m%d_%H%M%S).tar.gz"
-    
+    # 兼容宝塔：文件名格式保持一致
+    local file="$site_dir/${site}_$(date +%Y%m%d_%H%M%S).tar.gz"
+
     eval tar -czf "$file" $exclude_args -C "$SITES_DIR" "$site" 2>/dev/null
-    
+
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         log "备份成功: $site ($(du -h "$file" | cut -f1))"
-        upload_ftp "$file" "site"
-        cleanup "$SITE_BACKUP_DIR" "${site}_" "$keep"
+        # 兼容宝塔：FTP上传到 site/{site}/ 子目录
+        upload_ftp "$file" "site/${site}"
+        # 兼容宝塔：清理特定站点子目录下的旧备份
+        cleanup "$site_dir" "${site}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $site"; return 1
     fi
@@ -132,17 +146,23 @@ backup_site_one() {
 backup_site_all() {
     local keep="${1:-$SITE_KEEP}"
     log "========== 备份所有网站 =========="
-    
+
+    # 兼容宝塔：wwwroot 也使用独立子目录
+    local wwwroot_dir="$SITE_BACKUP_DIR/wwwroot"
+    mkdir -p "$wwwroot_dir"
+
     local exclude_args=$(get_exclude_args)
-    local file="$SITE_BACKUP_DIR/wwwroot_$(date +%Y%m%d_%H%M%S).tar.gz"
-    
+    local file="$wwwroot_dir/wwwroot_$(date +%Y%m%d_%H%M%S).tar.gz"
+
     log "打包: $SITES_DIR"
     eval tar -czf "$file" $exclude_args -C "$(dirname $SITES_DIR)" "$(basename $SITES_DIR)" 2>/dev/null
-    
+
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         log "备份成功: wwwroot ($(du -h "$file" | cut -f1))"
-        upload_ftp "$file" "site"
-        cleanup "$SITE_BACKUP_DIR" "wwwroot_" "$keep"
+        # 兼容宝塔：FTP上传到 site/wwwroot/ 子目录
+        upload_ftp "$file" "site/wwwroot"
+        # 兼容宝塔：清理 wwwroot 子目录下的旧备份
+        cleanup "$wwwroot_dir" "wwwroot_" "$keep"
     else
         rm -f "$file"; log "备份失败: $SITES_DIR"
     fi
@@ -158,22 +178,30 @@ backup_site() {
 # ==================== 目录备份 ====================
 backup_path() {
     local target="${1:-$DEFAULT_BACKUP_PATH}" keep="${2:-$PATH_KEEP}"
-    
+
     [ ! -e "$target" ] && { log "错误: 目录不存在 $target"; return 1; }
-    
+
     log "========== 备份目录 =========="
     log "目录: $target"
-    
+
     local exclude_args=$(get_exclude_args)
     local name=$(basename "$target")
-    local file="$PATH_BACKUP_DIR/${name}_$(date +%Y%m%d_%H%M%S).tar.gz"
-    
+
+    # 兼容宝塔：每个路径独立子目录
+    local path_dir="$PATH_BACKUP_DIR/${name}"
+    mkdir -p "$path_dir"
+
+    # 兼容宝塔：文件名格式 path_{name}_YYYYMMDD_HHMMSS.tar.gz
+    local file="$path_dir/path_${name}_$(date +%Y%m%d_%H%M%S).tar.gz"
+
     eval tar -czf "$file" $exclude_args -C "$(dirname $target)" "$name" 2>/dev/null
-    
+
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         log "备份成功: $name ($(du -h "$file" | cut -f1))"
-        upload_ftp "$file" "path"
-        cleanup "$PATH_BACKUP_DIR" "${name}_" "$keep"
+        # 兼容宝塔：FTP上传到 path/{name}/ 子目录
+        upload_ftp "$file" "path/${name}"
+        # 兼容宝塔：清理特定路径子目录下的旧备份
+        cleanup "$path_dir" "path_${name}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $target"
     fi
