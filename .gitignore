@@ -13,3 +13,13 @@ config/monitor.conf
 # 保留模板文件
 !config/*.example
 !config/*.template
+
+# Python 环境
+pyenv/                  # 系统级 Python 环境（使用 uv 管理）
+python_project/         # 项目级 Python 环境
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.pytest_cache/
