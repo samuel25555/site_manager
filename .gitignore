@@ -10,6 +10,9 @@ config/cloudflare*.ini
 config/backup.conf
 config/monitor.conf
 
+# 环境特定配置 - 每个环境独立维护
+CLAUDE.md
+
 # 保留模板文件
 !config/*.example
 !config/*.template
