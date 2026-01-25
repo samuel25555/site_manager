@@ -38,14 +38,19 @@ ADMIN_USER=""
 ADMIN_PASS=""
 MYSQL_ROOT_PASS=""
 
-# 选择的软件
+# 必装软件（自动安装）
 INSTALL_NGINX=true
+INSTALL_MYSQL=true
+INSTALL_REDIS=true
+INSTALL_SUPERVISOR=true
+INSTALL_CERTBOT=true
+INSTALL_UV=true
+
+# 用户选择的软件
 INSTALL_PHP=""
-INSTALL_MYSQL=false
-INSTALL_REDIS=false
-INSTALL_SUPERVISOR=false
+INSTALL_NODEJS=false
 INSTALL_DOCKER=false
-INSTALL_PYTHON=false
+INSTALL_COMPOSER=false
 
 #---------------------------------------
 # 工具函数
@@ -214,7 +219,16 @@ choose_directory() {
 #---------------------------------------
 choose_software() {
     echo ""
-    echo -e "${WHITE}[3/6] 选择要安装的软件...${NC}"
+    echo -e "${WHITE}[3/6] 选择软件配置...${NC}"
+    echo ""
+
+    log_info "必装软件（自动安装）："
+    echo "  ✓ Nginx - Web服务器"
+    echo "  ✓ MariaDB - 数据库"
+    echo "  ✓ Redis - 缓存"
+    echo "  ✓ Supervisor - 进程管理"
+    echo "  ✓ Certbot - SSL证书工具"
+    echo "  ✓ uv - Python包管理器"
     echo ""
 
     # 检查 whiptail 是否可用
@@ -223,20 +237,15 @@ choose_software() {
         apt-get install -y -qq whiptail > /dev/null 2>&1
     fi
 
-    # 使用 whiptail 显示复选框
-    local choices
-    choices=$(whiptail --title "Site Manager 安装程序" \
-        --checklist "选择要安装的软件 (空格选择，回车确认):" 20 60 12 \
-        "nginx"      "Nginx Web服务器" ON \
+    # 选择 PHP 版本（至少选一个）
+    local php_choices
+    php_choices=$(whiptail --title "Site Manager - PHP 版本选择" \
+        --checklist "选择要安装的 PHP 版本 (至少选一个，空格选择，回车确认):" 15 60 5 \
         "php83"      "PHP 8.3" OFF \
+        "php82"      "PHP 8.2" OFF \
+        "php81"      "PHP 8.1" OFF \
         "php80"      "PHP 8.0" ON \
         "php74"      "PHP 7.4" OFF \
-        "php73"      "PHP 7.3" OFF \
-        "mariadb"    "MariaDB 数据库" ON \
-        "redis"      "Redis 缓存" OFF \
-        "supervisor" "Supervisor 进程守护" ON \
-        "docker"     "Docker 容器" OFF \
-        "uv"         "uv Python项目管理" OFF \
         3>&1 1>&2 2>&3)
 
     # 用户取消
@@ -245,43 +254,67 @@ choose_software() {
         exit 0
     fi
 
-    # 解析选择
-    INSTALL_NGINX=false
+    # 解析 PHP 版本
     INSTALL_PHP=""
-    INSTALL_MYSQL=false
-    INSTALL_REDIS=false
-    INSTALL_SUPERVISOR=false
-    INSTALL_DOCKER=false
-    INSTALL_PYTHON=false
-
-    for choice in $choices; do
+    for choice in $php_choices; do
         choice=$(echo "$choice" | tr -d '"')
         case $choice in
-            nginx)      INSTALL_NGINX=true ;;
-            php83)      INSTALL_PHP="$INSTALL_PHP 8.3" ;;
-            php80)      INSTALL_PHP="$INSTALL_PHP 8.0" ;;
-            php74)      INSTALL_PHP="$INSTALL_PHP 7.4" ;;
-            php73)      INSTALL_PHP="$INSTALL_PHP 7.3" ;;
-            mariadb)    INSTALL_MYSQL=true ;;
-            redis)      INSTALL_REDIS=true ;;
-            supervisor) INSTALL_SUPERVISOR=true ;;
-            docker)     INSTALL_DOCKER=true ;;
-            uv)         INSTALL_PYTHON=true ;;
+            php83) INSTALL_PHP="$INSTALL_PHP 8.3" ;;
+            php82) INSTALL_PHP="$INSTALL_PHP 8.2" ;;
+            php81) INSTALL_PHP="$INSTALL_PHP 8.1" ;;
+            php80) INSTALL_PHP="$INSTALL_PHP 8.0" ;;
+            php74) INSTALL_PHP="$INSTALL_PHP 7.4" ;;
+        esac
+    done
+    INSTALL_PHP=$(echo "$INSTALL_PHP" | xargs)  # trim
+
+    # 至少选择一个 PHP 版本
+    if [[ -z "$INSTALL_PHP" ]]; then
+        log_error "至少需要选择一个 PHP 版本"
+        choose_software
+        return
+    fi
+
+    # 选择可选软件
+    local optional_choices
+    optional_choices=$(whiptail --title "Site Manager - 可选软件" \
+        --checklist "选择要安装的可选软件 (空格选择，回车确认):" 12 60 4 \
+        "nodejs"     "Node.js 运行环境" OFF \
+        "docker"     "Docker 容器" OFF \
+        "composer"   "Composer PHP包管理" OFF \
+        3>&1 1>&2 2>&3)
+
+    # 解析可选软件
+    INSTALL_NODEJS=false
+    INSTALL_DOCKER=false
+    INSTALL_COMPOSER=false
+
+    for choice in $optional_choices; do
+        choice=$(echo "$choice" | tr -d '"')
+        case $choice in
+            nodejs)   INSTALL_NODEJS=true ;;
+            docker)   INSTALL_DOCKER=true ;;
+            composer) INSTALL_COMPOSER=true ;;
         esac
     done
 
-    INSTALL_PHP=$(echo "$INSTALL_PHP" | xargs)  # trim
-
     # 显示确认信息
     echo ""
-    log_info "已选择的软件:"
-    $INSTALL_NGINX && echo "  - Nginx: 是" || echo "  - Nginx: 否"
-    [[ -n "$INSTALL_PHP" ]] && echo "  - PHP: $INSTALL_PHP" || echo "  - PHP: 否"
-    $INSTALL_MYSQL && echo "  - MariaDB: 是" || echo "  - MariaDB: 否"
-    $INSTALL_REDIS && echo "  - Redis: 是" || echo "  - Redis: 否"
-    $INSTALL_SUPERVISOR && echo "  - Supervisor: 是" || echo "  - Supervisor: 否"
-    $INSTALL_DOCKER && echo "  - Docker: 是" || echo "  - Docker: 否"
-    $INSTALL_PYTHON && echo "  - uv: 是" || echo "  - uv: 否"
+    log_info "安装配置摘要:"
+    echo ""
+    echo "  [必装软件]"
+    echo "    - Nginx"
+    echo "    - PHP: $INSTALL_PHP"
+    echo "    - MariaDB"
+    echo "    - Redis"
+    echo "    - Supervisor"
+    echo "    - Certbot"
+    echo "    - uv"
+    echo ""
+    echo "  [可选软件]"
+    $INSTALL_NODEJS && echo "    - Node.js" || echo "    - Node.js: 否"
+    $INSTALL_DOCKER && echo "    - Docker" || echo "    - Docker: 否"
+    $INSTALL_COMPOSER && echo "    - Composer" || echo "    - Composer: 否"
     echo ""
 
     read -p "确认安装? (y/n) [y]: " confirm
@@ -347,8 +380,7 @@ install_dependencies() {
     apt-get install -y -qq \
         curl wget git unzip tar gzip \
         ca-certificates gnupg lsb-release \
-        supervisor cron \
-        ufw \
+        cron ufw \
         > /dev/null 2>&1 || { log_error "依赖安装失败"; exit 1; }
 
     log_success "基础依赖安装完成"
@@ -558,10 +590,38 @@ install_docker() {
 }
 
 #---------------------------------------
-# 安装 uv (Python 项目管理)
+# 安装 Certbot
 #---------------------------------------
-install_python() {
-    if ! $INSTALL_PYTHON; then return; fi
+install_certbot() {
+    if ! $INSTALL_CERTBOT; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v certbot &>/dev/null; then
+        check_installed "Certbot" "$(certbot --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" && return
+    fi
+
+    log_info "安装 Certbot..."
+
+    # 安装依赖
+    apt-get install -y -qq python3 python3-venv libaugeas0 > /dev/null 2>&1 || { log_error "Certbot 依赖安装失败"; exit 1; }
+
+    # 使用虚拟环境安装 Certbot
+    python3 -m venv /opt/certbot > /dev/null 2>&1
+    /opt/certbot/bin/pip install --upgrade pip > /dev/null 2>&1
+    /opt/certbot/bin/pip install certbot certbot-dns-cloudflare > /dev/null 2>&1 || { log_error "Certbot 安装失败"; exit 1; }
+
+    # 创建符号链接
+    ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+
+    log_success "Certbot 安装完成"
+}
+
+#---------------------------------------
+# 安装 uv (Python 包管理器)
+#---------------------------------------
+install_uv() {
+    if ! $INSTALL_UV; then return; fi
 
     echo ""
     # 检测是否已安装
@@ -577,6 +637,67 @@ install_python() {
     ln -sf /root/.local/bin/uvx /usr/local/bin/uvx 2>/dev/null || true
 
     log_success "uv 安装完成"
+}
+
+#---------------------------------------
+# 安装 Node.js
+#---------------------------------------
+install_nodejs() {
+    if ! $INSTALL_NODEJS; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v node &>/dev/null; then
+        check_installed "Node.js" "$(node -v 2>&1 | tr -d 'v')" && return
+    fi
+
+    log_info "安装 Node.js..."
+
+    # 添加 NodeSource 仓库 (Node.js 20 LTS)
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - > /dev/null 2>&1
+    apt-get install -y -qq nodejs > /dev/null 2>&1 || { log_error "Node.js 安装失败"; exit 1; }
+
+    log_success "Node.js 安装完成"
+}
+
+#---------------------------------------
+# 安装 Composer
+#---------------------------------------
+install_composer() {
+    if ! $INSTALL_COMPOSER; then return; fi
+
+    echo ""
+    # 检测是否已安装
+    if command -v composer &>/dev/null; then
+        check_installed "Composer" "$(composer --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" && return
+    fi
+
+    # 检查 PHP 是否已安装
+    if ! command -v php &>/dev/null; then
+        log_error "Composer 需要 PHP，但 PHP 未安装"
+        return
+    fi
+
+    log_info "安装 Composer..."
+
+    # 下载并验证安装程序
+    EXPECTED_CHECKSUM="$(php -r 'copy("https://composer.github.io/installer.sig", "php://stdout");')"
+    php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    ACTUAL_CHECKSUM="$(php -r "echo hash_file('sha384', 'composer-setup.php');")"
+
+    if [ "$EXPECTED_CHECKSUM" != "$ACTUAL_CHECKSUM" ]; then
+        log_error "Composer 安装程序验证失败"
+        rm composer-setup.php
+        return
+    fi
+
+    php composer-setup.php --install-dir=/usr/local/bin --filename=composer > /dev/null 2>&1
+    rm composer-setup.php
+
+    # 配置中国镜像
+    composer config -g repo.packagist composer https://mirrors.aliyun.com/composer/ > /dev/null 2>&1
+
+    log_success "Composer 安装完成"
 }
 
 #---------------------------------------
@@ -892,13 +1013,21 @@ main() {
     create_directories
     install_dependencies
     setup_firewall
+
+    # 必装软件
     install_nginx
     install_php
     install_database
     install_redis
     install_supervisor
+    install_certbot
+    install_uv
+
+    # 可选软件
+    install_nodejs
     install_docker
-    install_python
+    install_composer
+
     install_panel
 
     finish_install
