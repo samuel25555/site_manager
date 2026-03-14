@@ -1475,6 +1475,7 @@ security_menu() {
     echo " 4) 放行端口"
     echo " 5) 封禁端口"
     echo " 6) 删除规则"
+    echo " 7) HTTPS 防窜站"
     echo " 0) 返回"
     echo ""
     read -p "选择: " c
@@ -1485,7 +1486,94 @@ security_menu() {
         4) read -p "端口: " p; ufw allow "$p/tcp" && echo -e "${GREEN}已放行${NC}";;
         5) read -p "端口: " p; ufw deny "$p/tcp" && echo -e "${GREEN}已封禁${NC}";;
         6) ufw status numbered; read -p "规则编号: " n; echo y | ufw delete "$n";;
+        7) enable_anti_hijack;;
     esac
+}
+
+# HTTPS 防窜站功能
+enable_anti_hijack() {
+    echo ""
+    echo -e "${CYAN}======== HTTPS 防窜站 ========${NC}"
+    echo "功能说明:"
+    echo "  防止删除站点后，访问该域名时显示其他站点内容"
+    echo "  未配置的域名访问时将直接关闭连接"
+    echo ""
+    
+    # 检查是否已启用
+    if [ -f "/etc/nginx/sites-enabled/default" ]; then
+        echo -e "${GREEN}✓ 防窜站功能已启用${NC}"
+        echo ""
+        read -p "是否重新配置? (y/n): " confirm
+        [ "$confirm" != "y" ] && return
+    fi
+    
+    # 查找可用的 SSL 证书
+    local default_cert=""
+    local ssl_dir="/www/ssl"
+    
+    for cert in "$ssl_dir"/*/fullchain.pem; do
+        if [ -f "$cert" ]; then
+            default_cert="$cert"
+            break
+        fi
+    done
+    
+    if [ -z "$default_cert" ]; then
+        echo -e "${RED}错误: 未找到可用的 SSL 证书${NC}"
+        echo "请先为至少一个站点申请证书"
+        return 1
+    fi
+    
+    local default_key="${default_cert%/*}/privkey.pem"
+    local default_domain=$(basename "${default_cert%/*}")
+    
+    echo -e "将使用证书: ${CYAN}$default_domain${NC}"
+    echo ""
+    read -p "确认启用? (y/n): " confirm
+    [ "$confirm" != "y" ] && return
+    
+    # 创建防窜站配置
+    cat > "/www/vhost/nginx/default" << NGINXCONFIG
+# 默认站点 - 防止 HTTPS 窜站
+# 自动生成于: $(date '+%Y-%m-%d %H:%M:%S')
+
+server {
+    listen 80 default_server;
+    listen 443 ssl default_server;
+    server_name _;
+    
+    # SSL 证书
+    ssl_certificate $default_cert;
+    ssl_certificate_key $default_key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    
+    # 日志
+    access_log /www/wwwlogs/default_access.log;
+    error_log /www/wwwlogs/default_error.log;
+    
+    # 返回 444 - 直接关闭连接
+    return 444;
+}
+NGINXCONFIG
+    
+    # 创建符号链接
+    ln -sf "/www/vhost/nginx/default" /etc/nginx/sites-enabled/default
+    
+    # 测试并重载 nginx
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        echo ""
+        echo -e "${GREEN}✅ HTTPS 防窜站功能已启用${NC}"
+        echo ""
+        echo "说明:"
+        echo "  • 访问未配置的域名时将直接关闭连接"
+        echo "  • 日志: /www/wwwlogs/default_access.log"
+        echo "  • 配置: /www/vhost/nginx/default"
+    else
+        echo -e "${RED}❌ Nginx 配置测试失败${NC}"
+        rm -f "/etc/nginx/sites-enabled/default"
+        return 1
+    fi
 }
 
 # ================== 系统信息 ==================
@@ -1856,9 +1944,10 @@ show_help() {
         echo ""
     fi
     echo "安全管理:"
-    echo "  site firewall status|on|off"
-    echo "  site firewall allow <端口>"
-    echo "  site firewall deny <端口>"
+        echo "  site firewall status|on|off"
+        echo "  site firewall allow <端口>"
+        echo "  site firewall deny <端口>"
+        echo "  site security anti-hijack            启用 HTTPS 防窜站"
     echo ""
     echo "Web面板:"
     echo "  site panel start|stop|restart"
@@ -2265,14 +2354,17 @@ SUPCONF
                     if [ -n "$3" ] && [ -n "$4" ]; then
                         local schedule="$3"
                         local cmd="$4"
-                        # site 内置命令不需要包装器（已内置日志），但需要完整路径
+
+                        # site backup 和 site ssl renew 已有内置日志系统，直接调用（不需要 site cron run 包装）
                         if [[ "$cmd" == "site backup"* ]] || [[ "$cmd" == "site ssl renew"* ]]; then
-                            # cron 环境 PATH 不含 /usr/local/bin，需使用完整路径
-                            local full_cmd="${cmd/site//usr/local/bin/site}"
+                            # 替换为完整路径（cron 环境 PATH 不含 /usr/local/bin）
+                            local full_cmd="${cmd/site /\/usr\/local\/bin\/site }"
                         else
-                            # 其他命令使用 site cron run 包装（自动生成日志路径）
+                            # 其他命令使用 site cron run 包装（自动生成日志）
+                            # 命令必须加引号，避免参数解析错误（防止日志被追加到 artisan 文件等问题）
                             local full_cmd="/usr/local/bin/site cron run \"$cmd\""
                         fi
+
                         # 添加到 crontab
                         (crontab -l 2>/dev/null; echo "$schedule $full_cmd") | crontab -
                         echo -e "${GREEN}已添加计划任务:${NC}"
@@ -2296,7 +2388,7 @@ SUPCONF
                             # 获取要删除的行内容
                             local to_delete=$(crontab -l 2>/dev/null | grep -v '^#' | grep -v '^$' | sed -n "${line_num}p")
                             # 从 crontab 中删除该行
-                            crontab -l 2>/dev/null | grep -v "^${to_delete}$" | crontab -
+                            crontab -l 2>/dev/null | grep -F -v "${to_delete}" | crontab -
                             echo -e "${GREEN}已删除: $to_delete${NC}"
                         else
                             echo -e "${RED}无效编号: $line_num (共 $total 条)${NC}"
@@ -2339,6 +2431,10 @@ SUPCONF
                 allow) [ -n "$3" ] && ufw allow "$3/tcp";;
                 deny) [ -n "$3" ] && ufw deny "$3/tcp";;
                 *) ufw status;;
+            esac;;
+        security) case "$2" in
+                anti-hijack) enable_anti_hijack;;
+                *) security_menu;;
             esac;;
         check) do_health_check;;
         monitor)
