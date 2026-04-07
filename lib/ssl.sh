@@ -141,6 +141,39 @@ _extract_root_domain() {
     echo "$domain" | awk -F. '{if(NF>=2) print $(NF-1)"."$NF; else print $0}'
 }
 
+# 自动组合泛域名格式
+# 输入：a.com,b.com,c.com
+# 输出：a.com,*.a.com,b.com,*.b.com,c.com,*.c.com
+_auto_wildcard_domains() {
+    local domains_input="$1"
+    local result=""
+
+    IFS=',' read -ra domains <<< "$domains_input"
+    for domain in "${domains[@]}"; do
+        domain=$(echo "$domain" | xargs)  # trim
+        [ -z "$domain" ] && continue
+
+        # 跳过已经是泛域名的
+        if [[ "$domain" == \*.* ]]; then
+            result="$result,$domain"
+            continue
+        fi
+
+        # 提取根域名
+        local root_domain=$(_extract_root_domain "$domain")
+
+        # 添加根域名和泛域名
+        if [ -n "$result" ]; then
+            result="$result,$root_domain,*.$root_domain"
+        else
+            result="$root_domain,*.$root_domain"
+        fi
+    done
+
+    # 去重（保持顺序）
+    echo "$result" | tr ',' '\n' | awk '!seen[$0]++' | tr '\n' ',' | sed 's/,$//'
+}
+
 # 绑定域名到账号
 ssl_bind() {
     _ssl_init
@@ -148,8 +181,15 @@ ssl_bind() {
     local alias="$2"
 
     if [ -z "$domain" ] || [ -z "$alias" ]; then
-        echo "用法: site ssl bind <根域名> <账号别名>"
+        echo "用法: site ssl bind <域名> <账号别名>"
+        echo "提示: 域名会自动提取根域名进行绑定"
         return 1
+    fi
+
+    # 自动提取根域名
+    local root_domain=$(_extract_root_domain "$domain")
+    if [ "$domain" != "$root_domain" ]; then
+        log_info "自动提取根域名: $domain -> $root_domain"
     fi
 
     # 检查账号是否存在
@@ -160,16 +200,16 @@ ssl_bind() {
         return 1
     fi
 
-    # 更新绑定（只存储 alias）
+    # 更新绑定（只存储 alias，使用根域名）
     local tmp=$(mktemp)
-    jq --arg d "$domain" --arg alias "$alias" \
+    jq --arg d "$root_domain" --arg alias "$alias" \
        '. + {($d): {"alias": $alias}}' \
        "$SSL_DOMAINS_FILE" > "$tmp" && mv "$tmp" "$SSL_DOMAINS_FILE"
 
     # 自动生成对应的 cloudflare ini 文件
     _generate_cloudflare_ini "$alias"
 
-    echo -e "${GREEN}已绑定: $domain -> $alias${NC}"
+    echo -e "${GREEN}已绑定: $root_domain -> $alias${NC}"
 }
 
 # 解绑域名
@@ -232,6 +272,48 @@ _get_credentials_for_domain() {
 }
 
 # ==================== 证书申请 ====================
+
+# 把 SSL 注入到 vhost 文件（在 listen 80 后插入 443 监听 + 证书 + 80→443 跳转）
+# 用法: _apply_ssl_to_vhost <domain> <cert_path> <key_path>
+_apply_ssl_to_vhost() {
+    local domain="$1"
+    local cert="$2"
+    local key="$3"
+    local vhost="$NGINX_CONF_DIR/$domain"
+
+    [ ! -f "$vhost" ] && return 0
+
+    # 已含 SSL：仅更新证书路径
+    if grep -q "listen 443 ssl" "$vhost"; then
+        sed -i -E \
+            -e "s|^(\s*ssl_certificate\s+).*|\\1${cert};|" \
+            -e "s|^(\s*ssl_certificate_key\s+).*|\\1${key};|" \
+            "$vhost"
+        log_info "已更新证书路径: $vhost"
+        return 0
+    fi
+
+    # 在 `listen 80;` 行后插入 SSL 块
+    awk -v cert="$cert" -v key="$key" '
+        /^[[:space:]]*listen 80;[[:space:]]*$/ && !done {
+            print
+            print "    listen 443 ssl http2;"
+            print "    ssl_certificate     " cert ";"
+            print "    ssl_certificate_key " key ";"
+            print "    ssl_protocols       TLSv1.2 TLSv1.3;"
+            print "    ssl_ciphers         HIGH:!aNULL:!MD5;"
+            print ""
+            print "    if ($server_port !~ 443){"
+            print "        return 301 https://$host$request_uri;"
+            print "    }"
+            done=1
+            next
+        }
+        { print }
+    ' "$vhost" > "$vhost.tmp" && mv "$vhost.tmp" "$vhost"
+
+    log_info "已注入 SSL 到 vhost: $vhost"
+}
 
 # 安装 certbot
 ssl_install() {
@@ -331,6 +413,14 @@ ssl_request() {
 
     # 解析域名列表
     IFS=',' read -ra domains <<< "$domains_input"
+
+    # 自动组合泛域名格式（如果使用 DNS 验证）
+    if [ "$use_dns" = "true" ]; then
+        local wildcard_domains=$(_auto_wildcard_domains "$domains_input")
+        IFS=',' read -ra domains <<< "$wildcard_domains"
+        log_info "自动组合泛域名: $wildcard_domains"
+    fi
+
     local primary_domain="${domains[0]}"
 
     log_info "申请 SSL 证书: ${domains[*]}"
@@ -364,7 +454,10 @@ ssl_request() {
             fi
 
             domain_args="$domain_args -d $domain"
-            [ "$wildcard" = "true" ] && domain_args="$domain_args -d *.$domain"
+            # 仅当域名本身不是泛域名时才追加 *.（避免出现 *.*.example.com）
+            if [ "$wildcard" = "true" ] && [[ "$domain" != \*.* ]]; then
+                domain_args="$domain_args -d *.$domain"
+            fi
         done
 
         if [ "$all_same_account" = "false" ]; then
@@ -433,6 +526,17 @@ ssl_request() {
         log_success "SSL 证书申请成功"
         ssl_log "证书申请成功: ${domains[*]}"
         log_info "证书路径: $SSL_DIR/$primary_domain/"
+
+        # 自动将证书注入到匹配的 vhost 文件
+        local cert_file="$SSL_DIR/$primary_domain/fullchain.pem"
+        local key_file="$SSL_DIR/$primary_domain/privkey.pem"
+        IFS=',' read -ra _input_domains <<< "$domains_input"
+        for d in "${_input_domains[@]}"; do
+            d=$(echo "$d" | xargs)
+            [ -z "$d" ] && continue
+            _apply_ssl_to_vhost "$d" "$cert_file" "$key_file"
+        done
+
         nginx_reload 2>/dev/null
     else
         log_error "SSL 证书申请失败"

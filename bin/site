@@ -595,7 +595,12 @@ NGINX
 
     if [ "$type" = "php" ]; then
         local php_sock="/run/php/php${php_version}-fpm.sock"
+        local tz="${TIMEZONE:-UTC}"
         cat >> "$conf_path" << NGINX
+
+    # SSL: 由 'site ssl <域名>' 自动注入 443 监听与证书路径
+    # ssl_certificate     /www/ssl/<root_domain>/fullchain.pem;
+    # ssl_certificate_key /www/ssl/<root_domain>/privkey.pem;
 
     location / {
         try_files \$uri \$uri/ /index.php?\$query_string;
@@ -604,7 +609,12 @@ NGINX
     location ~ \\.php\$ {
         fastcgi_pass unix:${php_sock};
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PHP_VALUE "date.timezone=${tz}";
         include fastcgi_params;
+    }
+
+    location ~ /\\.(?!well-known) {
+        deny all;
     }
 }
 NGINX
@@ -644,8 +654,24 @@ NGINX
     else
         cat >> "$conf_path" << 'NGINX'
 
+    # SSL: 由 'site ssl <域名>' 自动注入 443 监听与证书路径
+    # ssl_certificate     /www/ssl/<root_domain>/fullchain.pem;
+    # ssl_certificate_key /www/ssl/<root_domain>/privkey.pem;
+
     location / {
         try_files $uri $uri/ /index.html;
+        add_header Cache-Control "no-cache, no-store, must-revalidate";
+        add_header Pragma "no-cache";
+        add_header Expires "0";
+    }
+
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+
+    location ~ /\.(?!well-known) {
+        deny all;
     }
 }
 NGINX
