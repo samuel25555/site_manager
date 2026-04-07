@@ -178,11 +178,11 @@ software_install_mysql() {
     systemctl restart mysql
 
     # 保存密码到文件
-    echo "$root_pass" > "${BASE_DIR}/panel/.mysql_root_password"
-    chmod 600 "${BASE_DIR}/panel/.mysql_root_password"
+    echo "$root_pass" > "/root/.mysql_root_password"
+    chmod 600 "/root/.mysql_root_password"
 
     log_success "MySQL 8.0 安装完成"
-    log_info "root 密码已保存到: ${BASE_DIR}/panel/.mysql_root_password"
+    log_info "root 密码已保存到: /root/.mysql_root_password"
     echo ""
     echo -e "  ${YELLOW}MySQL root 密码: $root_pass${NC}"
     echo ""
@@ -211,11 +211,11 @@ software_install_mariadb() {
     systemctl restart mariadb
 
     # 保存密码
-    echo "$root_pass" > "${BASE_DIR}/panel/.mysql_root_password"
-    chmod 600 "${BASE_DIR}/panel/.mysql_root_password"
+    echo "$root_pass" > "/root/.mysql_root_password"
+    chmod 600 "/root/.mysql_root_password"
 
     log_success "MariaDB 安装完成"
-    log_info "root 密码已保存到: ${BASE_DIR}/panel/.mysql_root_password"
+    log_info "root 密码已保存到: /root/.mysql_root_password"
     echo ""
     echo -e "  ${YELLOW}MariaDB root 密码: $root_pass${NC}"
     echo ""

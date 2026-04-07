@@ -21,8 +21,8 @@ EXCLUDE_CONF="/opt/site_manager/config/backup_exclude.conf"
 
 # 默认保留份数
 DB_KEEP="${DB_KEEP:-51}"
-SITE_KEEP="${SITE_KEEP:-7}"
-PATH_KEEP="${PATH_KEEP:-7}"
+SITE_KEEP="${SITE_KEEP:-5}"
+PATH_KEEP="${PATH_KEEP:-5}"
 
 # MySQL 认证
 MYSQL_PWD_FILE="${MYSQL_DEFAULTS_FILE:-/www/server/mysql_root.pwd}"
@@ -62,14 +62,49 @@ upload_ftp() {
     fi
 }
 
-# 清理旧备份
+# 清理本地旧备份
 cleanup() {
     local dir="$1" pattern="$2" keep="$3"
     local count=$(ls -1 "$dir"/${pattern}* 2>/dev/null | wc -l)
     if [ "$count" -gt "$keep" ]; then
         ls -1t "$dir"/${pattern}* | tail -n +$((keep+1)) | xargs rm -f
-        log "清理旧备份: 删除 $((count-keep)) 份，保留 $keep 份"
+        log "清理本地旧备份: 删除 $((count-keep)) 份，保留 $keep 份"
     fi
+}
+
+# 清理FTP旧备份
+cleanup_ftp() {
+    local ftp_dir="$1" pattern="$2" keep="$3"
+    [ "$FTP_ENABLED" != "true" ] || [ -z "$FTP_HOST" ] && return 0
+
+    log "清理FTP旧备份: $ftp_dir (保留${keep}份)"
+
+    local files
+    files=$(curl -s --list-only \
+        "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/${ftp_dir}/" \
+        --user "${FTP_USER}:${FTP_PASS}" 2>/dev/null | grep "^${pattern}" | sort)
+
+    local total
+    total=$(echo "$files" | grep -c . 2>/dev/null)
+    [ "$total" -eq 0 ] && { log "FTP清理: 目录为空"; return 0; }
+
+    if [ "$total" -le "$keep" ]; then
+        log "FTP清理: 无需删除（共${total}份，保留${keep}份）"
+        return 0
+    fi
+
+    local to_delete del_count
+    to_delete=$(echo "$files" | head -n $((total - keep)))
+    del_count=$(echo "$to_delete" | grep -c .)
+
+    echo "$to_delete" | while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        curl -s "ftp://${FTP_HOST}:${FTP_PORT}/" \
+            --user "${FTP_USER}:${FTP_PASS}" \
+            --quote "DELE ${FTP_PATH}/${ftp_dir}/${f}" > /dev/null 2>&1
+    done
+
+    log "FTP清理完成: 删除${del_count}份，保留${keep}份"
 }
 
 # ==================== 数据库备份 ====================
@@ -92,6 +127,8 @@ backup_db_one() {
         upload_ftp "${file}.gz" "database/mysql/${db}"
         # 兼容宝塔：清理特定数据库子目录下的旧备份
         cleanup "$db_dir" "${db}_" "$keep"
+        # 清理FTP上的旧备份
+        cleanup_ftp "database/mysql/${db}" "${db}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $db"; return 1
     fi
@@ -138,6 +175,8 @@ backup_site_one() {
         upload_ftp "$file" "site/${site}"
         # 兼容宝塔：清理特定站点子目录下的旧备份
         cleanup "$site_dir" "${site}_" "$keep"
+        # 清理FTP上的旧备份
+        cleanup_ftp "site/${site}" "${site}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $site"; return 1
     fi
@@ -163,6 +202,8 @@ backup_site_all() {
         upload_ftp "$file" "site/wwwroot"
         # 兼容宝塔：清理 wwwroot 子目录下的旧备份
         cleanup "$wwwroot_dir" "wwwroot_" "$keep"
+        # 清理FTP上的旧备份
+        cleanup_ftp "site/wwwroot" "wwwroot_" "$keep"
     else
         rm -f "$file"; log "备份失败: $SITES_DIR"
     fi
@@ -202,6 +243,8 @@ backup_path() {
         upload_ftp "$file" "path/${name}"
         # 兼容宝塔：清理特定路径子目录下的旧备份
         cleanup "$path_dir" "path_${name}_" "$keep"
+        # 清理FTP上的旧备份
+        cleanup_ftp "path/${name}" "${name}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $target"
     fi

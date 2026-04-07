@@ -1894,6 +1894,112 @@ do_health_check() {
     echo ""
 }
 
+# ================== 系统调优 ==================
+# 根据当前内存/CPU 调用 lib/tune.sh 自动生成 nginx/mariadb/php-fpm/opcache/limits/sysctl 配置
+site_tune() {
+    local action="${1:-show}"
+    local tune_lib="/opt/site_manager/lib/tune.sh"
+    [ -f "$tune_lib" ] || tune_lib="$SCRIPT_DIR/../lib/tune.sh"
+    [ ! -f "$tune_lib" ] && echo -e "${RED}找不到 lib/tune.sh${NC}" && return 1
+    source "$tune_lib"
+
+    local mem_mb=$(get_memory_mb)
+    local cores=$(get_cpu_cores)
+    calc_nginx_params; calc_mariadb_params; calc_php_params
+
+    echo ""
+    echo -e "${CYAN}━━━━━━ 系统调优 ━━━━━━${NC}"
+    echo -e "  内存: ${GREEN}${mem_mb} MB${NC}    CPU: ${GREEN}${cores} 核${NC}"
+    echo ""
+    echo -e "${YELLOW}计算参数:${NC}"
+    printf "  Nginx  worker_connections=%s  rlimit_nofile=%s\n" "$NGINX_WORKER_CONNECTIONS" "$NGINX_WORKER_RLIMIT"
+    printf "  MariaDB innodb_buffer_pool=%s  max_connections=%s  tmp_table=%s\n" "$MYSQL_INNODB_BUFFER" "$MYSQL_MAX_CONNECTIONS" "$MYSQL_TMP_TABLE"
+    printf "  PHP-FPM max_children=%s  start=%s  spare=%s/%s  opcache=%sM\n" "$PHP_MAX_CHILDREN" "$PHP_START_SERVERS" "$PHP_MIN_SPARE" "$PHP_MAX_SPARE" "$PHP_OPCACHE_MEM"
+    echo ""
+
+    if [ "$action" != "apply" ]; then
+        echo -e "${YELLOW}预览模式${NC}（未写入文件）"
+        echo "执行 ${GREEN}site tune apply${NC} 应用以上配置"
+        return 0
+    fi
+
+    check_root || return 1
+
+    local stamp=$(date +%Y%m%d_%H%M%S)
+    local backup_dir="/var/backups/site_manager_tune_${stamp}"
+    mkdir -p "$backup_dir"
+    echo -e "${CYAN}备份原配置到: ${backup_dir}${NC}"
+
+    # Nginx
+    if [ -f /etc/nginx/nginx.conf ]; then
+        cp /etc/nginx/nginx.conf "$backup_dir/nginx.conf.bak"
+        generate_nginx_conf > /etc/nginx/nginx.conf
+        if nginx -t 2>/dev/null; then
+            systemctl reload nginx && echo -e "${GREEN}[OK]${NC} nginx.conf 已应用"
+        else
+            cp "$backup_dir/nginx.conf.bak" /etc/nginx/nginx.conf
+            echo -e "${RED}[FAIL]${NC} nginx 配置语法错误，已回滚"
+        fi
+    fi
+
+    # MariaDB
+    if systemctl is-active --quiet mariadb; then
+        local mysql_conf_dir="/etc/mysql/mariadb.conf.d"
+        [ -d "$mysql_conf_dir" ] || mysql_conf_dir="/etc/mysql/conf.d"
+        mkdir -p "$mysql_conf_dir"
+        local mysql_tune="$mysql_conf_dir/99-tune.cnf"
+        [ -f "$mysql_tune" ] && cp "$mysql_tune" "$backup_dir/$(basename $mysql_tune).bak"
+        generate_mariadb_conf > "$mysql_tune"
+        if systemctl restart mariadb; then
+            echo -e "${GREEN}[OK]${NC} MariaDB 已应用 → $mysql_tune"
+        else
+            rm -f "$mysql_tune"
+            [ -f "$backup_dir/$(basename $mysql_tune).bak" ] && cp "$backup_dir/$(basename $mysql_tune).bak" "$mysql_tune"
+            systemctl restart mariadb
+            echo -e "${RED}[FAIL]${NC} MariaDB 启动失败，已回滚"
+        fi
+    fi
+
+    # PHP-FPM (所有已安装版本)
+    for php_dir in /etc/php/*/fpm; do
+        [ -d "$php_dir" ] || continue
+        local version=$(basename "$(dirname "$php_dir")")
+        local pool_conf="$php_dir/pool.d/www.conf"
+        local opcache_conf="$php_dir/conf.d/99-opcache-tune.ini"
+
+        if [ -f "$pool_conf" ]; then
+            cp "$pool_conf" "$backup_dir/php${version}-www.conf.bak"
+            generate_php_fpm_conf "$version" > "$pool_conf"
+        fi
+        [ -f "$opcache_conf" ] && cp "$opcache_conf" "$backup_dir/php${version}-opcache.ini.bak"
+        generate_opcache_conf > "$opcache_conf"
+
+        if systemctl restart "php${version}-fpm" 2>/dev/null; then
+            echo -e "${GREEN}[OK]${NC} PHP-FPM ${version} 已应用"
+        else
+            cp "$backup_dir/php${version}-www.conf.bak" "$pool_conf" 2>/dev/null
+            rm -f "$opcache_conf"
+            systemctl restart "php${version}-fpm"
+            echo -e "${RED}[FAIL]${NC} PHP-FPM ${version} 重启失败，已回滚"
+        fi
+    done
+
+    # 系统限制
+    local limits_file="/etc/security/limits.d/99-tune.conf"
+    [ -f "$limits_file" ] && cp "$limits_file" "$backup_dir/limits.conf.bak"
+    generate_limits_conf > "$limits_file"
+    echo -e "${GREEN}[OK]${NC} limits → $limits_file (新会话生效)"
+
+    # sysctl
+    local sysctl_file="/etc/sysctl.d/99-tune.conf"
+    [ -f "$sysctl_file" ] && cp "$sysctl_file" "$backup_dir/sysctl.conf.bak"
+    generate_sysctl_conf > "$sysctl_file"
+    sysctl -p "$sysctl_file" >/dev/null 2>&1 && echo -e "${GREEN}[OK]${NC} sysctl 已应用 → $sysctl_file"
+
+    echo ""
+    echo -e "${GREEN}调优完成${NC}  备份目录: ${backup_dir}"
+}
+
 # ================== 命令行接口 ==================
 show_help() {
     echo ""
@@ -1933,6 +2039,8 @@ show_help() {
     echo ""
     echo "系统检查:"
     echo "  site check              健康检查 (PHP/Nginx/MySQL/SSL/磁盘等)"
+    echo "  site tune               预览自动调优参数 (按内存/CPU 计算)"
+    echo "  site tune apply         应用调优 (nginx/mariadb/php-fpm/opcache/limits/sysctl)"
     echo ""
     echo "监控告警:"
     echo "  site monitor config     查看/配置监控"
@@ -2463,6 +2571,7 @@ SUPCONF
                 *) security_menu;;
             esac;;
         check) do_health_check;;
+        tune) site_tune "$2";;
         monitor)
             source /opt/site_manager/lib/monitor.sh 2>/dev/null
             local monitor_conf="/opt/site_manager/config/monitor.conf"
