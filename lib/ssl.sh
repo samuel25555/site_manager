@@ -345,11 +345,10 @@ ssl_setup_hooks() {
 
     if [ -f "$source_script" ]; then
         mkdir -p "$hook_dir"
-        if [ ! -f "$hook_script" ]; then
-            cp "$source_script" "$hook_script"
-            chmod +x "$hook_script"
-            log_info "已安装 Certbot Post-Hook: $hook_script"
-        fi
+        # 始终刷新为最新版（旧版只 reload、不同步 /www/ssl，必须覆盖更新）
+        cp -f "$source_script" "$hook_script"
+        chmod +x "$hook_script"
+        log_info "已安装/更新 Certbot Post-Hook: $hook_script"
     fi
 }
 
