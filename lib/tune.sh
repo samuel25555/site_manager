@@ -265,5 +265,47 @@ fs.file-max = 65535
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
 net.core.netdev_max_backlog = 65535
+net.ipv4.tcp_syncookies = 1
 EOF
+}
+
+# ── nginx listen backlog ───────────────────────────────────────────────
+# 给 socket 属主 vhost 的 listen 80/443 注入 backlog=,避免 nginx 默认 511
+# 截断上面的 somaxconn,导致突发连接溢出被丢弃 → 上游(如 Cloudflare)出现 522。
+# 约束: backlog 每个 ip:port 只能设一次,所以只改"解析顺序里第一个 listen
+# 的 vhost"(conf.d/*.conf 优先于 sites-enabled/*);幂等,可重复运行。
+# 注意: backlog 改动需 restart(非 reload)才能让已监听 socket 重新 listen() 生效。
+NGINX_LISTEN_BACKLOG="${NGINX_LISTEN_BACKLOG:-8192}"
+
+apply_nginx_listen_backlog() {
+    local backup_dir="$1"
+    local manifest="$backup_dir/.listen_backlog_changed"
+    : > "$manifest"
+    local port owner f saved
+    for port in 80 443; do
+        owner=""
+        for f in $(ls /etc/nginx/conf.d/*.conf 2>/dev/null) $(ls /etc/nginx/sites-enabled/* 2>/dev/null); do
+            grep -qE "listen[[:space:]]+(\[::\]:)?${port}([[:space:]]|;)" "$f" 2>/dev/null && { owner=$(readlink -f "$f"); break; }
+        done
+        [ -z "$owner" ] && continue
+        # 已含 backlog 则跳过(幂等)
+        grep -qE "listen[[:space:]]+(\[::\]:)?${port}[^;]*backlog=" "$owner" 2>/dev/null && continue
+        saved="$backup_dir/listen_$(echo "$owner" | md5sum | cut -c1-8).bak"
+        if [ ! -f "$saved" ]; then
+            cp -a "$owner" "$saved"
+            echo "${owner}|${saved}" >> "$manifest"
+        fi
+        sed -i -E "s/^([[:space:]]*listen[[:space:]]+(\[::\]:)?${port})([[:space:]][^;]*)?;/\1\3 backlog=${NGINX_LISTEN_BACKLOG};/" "$owner"
+        echo -e "  ${GREEN}[backlog]${NC} :${port} 属主 ${owner} 注入 backlog=${NGINX_LISTEN_BACKLOG}"
+    done
+}
+
+rollback_nginx_listen_backlog() {
+    local backup_dir="$1"
+    local manifest="$backup_dir/.listen_backlog_changed"
+    [ -f "$manifest" ] || return 0
+    local orig saved
+    while IFS='|' read -r orig saved; do
+        [ -n "$orig" ] && [ -f "$saved" ] && cp -a "$saved" "$orig"
+    done < "$manifest"
 }

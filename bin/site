@@ -1934,10 +1934,17 @@ site_tune() {
     if [ -f /etc/nginx/nginx.conf ]; then
         cp /etc/nginx/nginx.conf "$backup_dir/nginx.conf.bak"
         generate_nginx_conf > /etc/nginx/nginx.conf
+        apply_nginx_listen_backlog "$backup_dir"
         if nginx -t 2>/dev/null; then
             systemctl reload nginx && echo -e "${GREEN}[OK]${NC} nginx.conf 已应用"
+            # listen backlog 改动需 restart 才能让监听 socket 重新 listen() 生效
+            local live_bq=$(ss -lnt 'sport = :443' 2>/dev/null | awk '/LISTEN/{print $3; exit}')
+            if [ -n "$live_bq" ] && [ "$live_bq" -lt "$NGINX_LISTEN_BACKLOG" ]; then
+                echo -e "  ${YELLOW}[!]${NC} listen backlog 已写入配置，但当前 socket 仍为 ${live_bq}；需 ${GREEN}systemctl restart nginx${NC} 才生效（restart 会瞬断连接，自行择机）"
+            fi
         else
             cp "$backup_dir/nginx.conf.bak" /etc/nginx/nginx.conf
+            rollback_nginx_listen_backlog "$backup_dir"
             echo -e "${RED}[FAIL]${NC} nginx 配置语法错误，已回滚"
         fi
     fi
