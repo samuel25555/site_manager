@@ -534,15 +534,26 @@ _do_site_create() {
     local type="$2"
     local php_version="$3"
     local custom_root="$4"
+    local proj_name="$5"
 
     # 验证域名格式
     validate_domain "$domain" || return 1
 
+    # 项目标识(identity): 目录/vhost/日志/软链用它, server_name 用域名
+    # 默认 identity=域名(向后兼容); 传 --name 则解耦
+    local identity="${proj_name:-$domain}"
+    if [ -n "$proj_name" ]; then
+        if ! [[ "$proj_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+            echo -e "${RED}项目名只能含字母/数字/.-_ : $proj_name${NC}"
+            return 1
+        fi
+    fi
+
     # 确保 www 用户存在
     ensure_www_user || return 1
 
-    local site_path="$SITES_DIR/$domain"
-    local conf_path="$NGINX_CONF_DIR/$domain"
+    local site_path="$SITES_DIR/$identity"
+    local conf_path="$NGINX_CONF_DIR/$identity"
 
     [ -f "$conf_path" ] && echo -e "${RED}站点已存在${NC}" && return 1
 
@@ -589,8 +600,8 @@ server {
     root $root;
     index index.php index.html;
 
-    access_log $LOGS_DIR/${domain}_access.log;
-    error_log $LOGS_DIR/${domain}_error.log;
+    access_log $LOGS_DIR/${identity}_access.log;
+    error_log $LOGS_DIR/${identity}_error.log;
 NGINX
 
     if [ "$type" = "php" ]; then
@@ -650,7 +661,7 @@ NGINX
 }
 NGINX
         # 创建应用配置
-        _setup_app_site "$domain" "$type" "$port"
+        _setup_app_site "$identity" "$type" "$port"
     else
         cat >> "$conf_path" << 'NGINX'
 
@@ -677,11 +688,15 @@ NGINX
 NGINX
     fi
 
-    ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$domain"
+    ln -sf "$conf_path" "$NGINX_ENABLED_DIR/$identity"
 
     # 安全测试并重载，失败时回滚
-    if nginx_safe_reload "$conf_path" "$NGINX_ENABLED_DIR/$domain"; then
-        echo -e "${GREEN}站点 $domain 创建成功 (${type}${php_version:+ $php_version})${NC}"
+    if nginx_safe_reload "$conf_path" "$NGINX_ENABLED_DIR/$identity"; then
+        if [ "$identity" != "$domain" ]; then
+            echo -e "${GREEN}站点 $identity 创建成功 (${type}${php_version:+ $php_version}) 域名: $domain${NC}"
+        else
+            echo -e "${GREEN}站点 $domain 创建成功 (${type}${php_version:+ $php_version})${NC}"
+        fi
     else
         # 清理站点目录
         [ -d "$site_path" ] && rm -rf "$site_path"
@@ -2019,7 +2034,8 @@ show_help() {
     echo ""
     echo "站点管理:"
     echo "  site list               查看所有站点"
-    echo "  site create <域名> <类型> [--root <目录>]  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
+    echo "  site create <域名> <类型> [--root <目录>] [--name <项目名>]  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
+    echo "                          --name 指定项目标识(目录/vhost/日志用它), 域名只进 server_name; 省略则标识=域名"
     echo "  site delete <域名> [--config|--full|--backup]  删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
@@ -2101,11 +2117,16 @@ handle_cli() {
         list) site_list;;
         create) [ -n "$2" ] && [ -n "$3" ] && {
             domain="$2"; type_arg="$3"
-            local type="" php_version="" port="" custom_root=""
-            # 检查 --root 参数
-            if [ "$4" = "--root" ] && [ -n "$5" ]; then
-                custom_root="$5"
-            fi
+            local type="" php_version="" port="" custom_root="" proj_name=""
+            # 解析 --root / --name (顺序无关)
+            local _extra=("${@:4}") _i=0
+            while [ $_i -lt ${#_extra[@]} ]; do
+                case "${_extra[$_i]}" in
+                    --root) custom_root="${_extra[$((_i+1))]}"; _i=$((_i+2));;
+                    --name) proj_name="${_extra[$((_i+1))]}"; _i=$((_i+2));;
+                    *) _i=$((_i+1));;
+                esac
+            done
             # 解析类型参数
             if [[ "$type_arg" =~ ^php([0-9])([0-9]+)$ ]]; then
                 type="php"
@@ -2126,8 +2147,8 @@ handle_cli() {
                 echo "无效类型: $type_arg (支持: php73/php80/php83/static/node/pm2/python/docker/proxy)"
                 exit 1
             fi
-            _do_site_create "$domain" "$type" "$php_version" "$custom_root"
-        } || echo "用法: site create <域名> <类型> [--root <目录>] (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
+            _do_site_create "$domain" "$type" "$php_version" "$custom_root" "$proj_name"
+        } || echo "用法: site create <域名> <类型> [--root <目录>] [--name <项目名>] (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
         delete)
             if [ -z "$2" ]; then
                 echo "用法: site delete <域名> [选项]"

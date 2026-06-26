@@ -52,6 +52,7 @@ site soft
 ```bash
 site list                      # 查看所有站点
 site create <域名> <类型>       # 创建站点 (php/static/proxy)
+site create <域名> <类型> --name <项目名>   # 目录/标识用项目名, 域名只进 server_name(解耦)
 site delete <域名>             # 删除站点
 site enable <域名>             # 启用站点
 site disable <域名>            # 禁用站点
