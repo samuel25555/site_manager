@@ -1,6 +1,9 @@
 #!/bin/bash
 # SSL 证书管理 - 支持多账号
 
+# cron 的 PATH 不含 /usr/local/bin，certbot wrapper 在那里
+export PATH="/usr/local/bin:$PATH"
+
 CONFIG_DIR="${ROOT_DIR:-/opt/site_manager}/config"
 SSL_DIR="${SSL_DIR:-/www/ssl}"
 DNS_ACCOUNTS_FILE="$CONFIG_DIR/dns_accounts.json"
@@ -589,7 +592,8 @@ ssl_renew() {
         local cert_file="$cert_dir/fullchain.pem"
         local days_left=$(_get_cert_days_left "$cert_file")
 
-        if [ "$days_left" -lt 0 ]; then
+        # 只有证书真的读不出来才跳过；已过期(负数)必须续期
+        if ! openssl x509 -noout -in "$cert_file" > /dev/null 2>&1; then
             ssl_log "跳过 $domain: 无法读取证书"
             ((skipped++))
             continue
@@ -623,11 +627,13 @@ ssl_renew() {
                 continue
             fi
 
-            if certbot renew --cert-name "$domain" \
+            certbot renew --cert-name "$domain" \
                 --dns-cloudflare \
                 --dns-cloudflare-credentials "$cred" \
                 --dns-cloudflare-propagation-seconds 30 \
-                --non-interactive 2>&1 | tee -a "$SSL_LOG"; then
+                --non-interactive 2>&1 | tee -a "$SSL_LOG"
+            # 取 certbot 的退出码而不是 tee 的
+            if [ "${PIPESTATUS[0]}" -eq 0 ]; then
                 ssl_log "成功续期: $domain"
                 ((renewed++))
             else
@@ -636,7 +642,8 @@ ssl_renew() {
             fi
         else
             # HTTP 验证续期
-            if certbot renew --cert-name "$domain" --non-interactive 2>&1 | tee -a "$SSL_LOG"; then
+            certbot renew --cert-name "$domain" --non-interactive 2>&1 | tee -a "$SSL_LOG"
+            if [ "${PIPESTATUS[0]}" -eq 0 ]; then
                 ssl_log "成功续期: $domain"
                 ((renewed++))
             else
