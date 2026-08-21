@@ -536,12 +536,27 @@ _do_site_create() {
     local custom_root="$4"
     local proj_name="$5"
 
-    # 验证域名格式
-    validate_domain "$domain" || return 1
+    # 支持逗号分隔的多域名: 全部进 server_name, 第一个作默认项目标识
+    # 例: site create "admin.x.com,admin1.x.com,api.x.com" php80
+    # 语法与 site ssl "a,b" --dns 一致
+    local server_names="" primary_domain="" d
+    local IFS_BAK="$IFS"; IFS=','
+    for d in $domain; do
+        d="$(echo "$d" | tr -d ' ')"
+        [ -z "$d" ] && continue
+        IFS="$IFS_BAK"
+        validate_domain "$d" || { IFS="$IFS_BAK"; return 1; }
+        IFS=','
+        [ -z "$primary_domain" ] && primary_domain="$d"
+        server_names="${server_names:+$server_names }$d"
+    done
+    IFS="$IFS_BAK"
+    [ -z "$primary_domain" ] && echo -e "${RED}未提供有效域名${NC}" && return 1
+    domain="$primary_domain"
 
     # 项目标识(identity): 目录/vhost/日志/软链用它, server_name 用域名
-    # 默认 identity=域名(向后兼容); 传 --name 则解耦
-    local identity="${proj_name:-$domain}"
+    # 默认 identity=第一个域名(向后兼容); 传 --name 则解耦
+    local identity="${proj_name:-$primary_domain}"
     if [ -n "$proj_name" ]; then
         if ! [[ "$proj_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
             echo -e "${RED}项目名只能含字母/数字/.-_ : $proj_name${NC}"
@@ -596,7 +611,7 @@ _do_site_create() {
     cat > "$conf_path" << NGINX
 server {
     listen 80;
-    server_name $domain;
+    server_name $server_names;
     root $root;
     index index.php index.html;
 
@@ -807,6 +822,71 @@ site_delete() {
         3) _do_site_delete "$domain" "backup";;
         *) echo "已取消";;
     esac
+}
+
+# 增删站点的 server_name 别名（多域名共用一个 vhost 是本项目的常见形态：
+# admin+api 同块、多个镜像域名共用一份前端。以前只能手工 sed 改 vhost。）
+site_alias() {
+    local action="$1" site="$2"; shift 2
+    local conf="$NGINX_CONF_DIR/$site"
+
+    [ -z "$action" ] || [ -z "$site" ] && { echo "用法: site alias <站点> add|remove|list [域名...]"; return 1; }
+    [ ! -f "$conf" ] && echo -e "${RED}站点配置不存在: $conf${NC}" && return 1
+
+    local line cur
+    line=$(grep -nE "^[[:space:]]*server_name[[:space:]]" "$conf" | head -1)
+    [ -z "$line" ] && echo -e "${RED}未找到 server_name 行${NC}" && return 1
+    cur=$(echo "$line" | sed -E 's/^[0-9]+:[[:space:]]*server_name[[:space:]]+//; s/;[[:space:]]*$//')
+
+    if [ "$action" = "list" ]; then
+        echo -e "${CYAN}$site${NC} 的 server_name:"
+        for d in $cur; do echo "  $d"; done
+        return 0
+    fi
+
+    local new="$cur" d
+    for d in "$@"; do
+        d="$(echo "$d" | tr -d ' ')"; [ -z "$d" ] && continue
+        case "$action" in
+            add)
+                validate_domain "$d" || return 1
+                if echo " $new " | grep -q " $d "; then
+                    echo -e "${YELLOW}已存在，跳过: $d${NC}"
+                else
+                    new="$new $d"; echo -e "${GREEN}+ $d${NC}"
+                fi
+                ;;
+            remove)
+                if echo " $new " | grep -q " $d "; then
+                    new=$(echo " $new " | sed "s/ $d / /g" | xargs)
+                    echo -e "${YELLOW}- $d${NC}"
+                else
+                    echo -e "${YELLOW}不存在，跳过: $d${NC}"
+                fi
+                ;;
+            *) echo "用法: site alias <站点> add|remove|list [域名...]"; return 1;;
+        esac
+    done
+
+    [ -z "$new" ] && echo -e "${RED}拒绝清空 server_name${NC}" && return 1
+    [ "$new" = "$cur" ] && echo -e "${YELLOW}无变化${NC}" && return 0
+
+    # 改的是已有文件，nginx_safe_reload 的删除式回滚不适用，这里自己备份还原
+    local bak="${conf}.alias.bak.$$"
+    cp -a "$conf" "$bak"
+    sed -i -E "s|^([[:space:]]*server_name[[:space:]]+).*|\1${new};|" "$conf"
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        rm -f "$bak"
+        echo -e "${GREEN}已更新 server_name: ${NC}$new"
+        echo -e "${YELLOW}提示: 新增域名需要对应证书，可执行 site ssl <域名> --dns${NC}"
+    else
+        echo -e "${RED}Nginx 配置测试失败，已回滚${NC}"
+        nginx -t 2>&1 | head -5
+        mv -f "$bak" "$conf"
+        return 1
+    fi
 }
 
 site_enable() {
@@ -1531,88 +1611,104 @@ security_menu() {
     esac
 }
 
-# HTTPS 防窜站功能
+# HTTPS 防窜站功能（catch-all 兜底 server）
+# 未匹配任何 server_name 的请求直接断开，避免回落到解析顺序里的第一个站点
+# —— 没有它时，任意指向本机的域名都能打开你的后台登录页。
 enable_anti_hijack() {
-    echo ""
-    echo -e "${CYAN}======== HTTPS 防窜站 ========${NC}"
-    echo "功能说明:"
-    echo "  防止删除站点后，访问该域名时显示其他站点内容"
-    echo "  未配置的域名访问时将直接关闭连接"
-    echo ""
-    
-    # 检查是否已启用
-    if [ -f "/etc/nginx/sites-enabled/default" ]; then
-        echo -e "${GREEN}✓ 防窜站功能已启用${NC}"
-        echo ""
-        read -p "是否重新配置? (y/n): " confirm
-        [ "$confirm" != "y" ] && return
-    fi
-    
-    # 查找可用的 SSL 证书
-    local default_cert=""
-    local ssl_dir="/www/ssl"
-    
-    for cert in "$ssl_dir"/*/fullchain.pem; do
-        if [ -f "$cert" ]; then
-            default_cert="$cert"
-            break
-        fi
-    done
-    
-    if [ -z "$default_cert" ]; then
-        echo -e "${RED}错误: 未找到可用的 SSL 证书${NC}"
-        echo "请先为至少一个站点申请证书"
-        return 1
-    fi
-    
-    local default_key="${default_cert%/*}/privkey.pem"
-    local default_domain=$(basename "${default_cert%/*}")
-    
-    echo -e "将使用证书: ${CYAN}$default_domain${NC}"
-    echo ""
-    read -p "确认启用? (y/n): " confirm
-    [ "$confirm" != "y" ] && return
-    
-    # 创建防窜站配置
-    cat > "/www/vhost/nginx/default" << NGINXCONFIG
-# 默认站点 - 防止 HTTPS 窜站
-# 自动生成于: $(date '+%Y-%m-%d %H:%M:%S')
+    local assume_yes=""
+    [ "$1" = "--yes" ] && assume_yes=1
 
+    local conf="/etc/nginx/conf.d/000-catch-all.conf"
+
+    if [ -z "$assume_yes" ]; then
+        echo ""
+        echo -e "${CYAN}======== HTTPS 防窜站 ========${NC}"
+        echo "  未配置的域名访问时将直接关闭连接(444)"
+        echo ""
+        if [ -f "$conf" ]; then
+            echo -e "${GREEN}✓ 已启用${NC}"
+            read -p "是否重新配置? (y/n): " confirm
+            [ "$confirm" != "y" ] && return
+        fi
+    fi
+
+    # 证书：优先复用现有的；一张都没有就自签兜底(CF Full 等非严格模式接受自签)
+    # 装机时通常还没有任何证书，没有这个兜底就没法在装机流程里自动启用
+    local default_cert="" cert
+    for cert in /www/ssl/*/fullchain.pem; do
+        [ -f "$cert" ] && { default_cert="$cert"; break; }
+    done
+    local default_key
+    if [ -z "$default_cert" ]; then
+        echo -e "${YELLOW}未找到证书，生成自签证书用于兜底 server${NC}"
+        mkdir -p /www/ssl/default
+        openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+            -keyout /www/ssl/default/privkey.pem \
+            -out /www/ssl/default/fullchain.pem \
+            -subj "/CN=default" 2>/dev/null || {
+                echo -e "${RED}自签证书生成失败${NC}"; return 1; }
+        chmod 600 /www/ssl/default/privkey.pem
+        default_cert="/www/ssl/default/fullchain.pem"
+    fi
+    default_key="${default_cert%/*}/privkey.pem"
+
+    # backlog 归属：tune 的 apply_nginx_listen_backlog 按 conf.d/*.conf → sites-enabled/*
+    # 取「第一个含 listen 的文件」当属主，且幂等判断只看属主那一个文件。
+    # catch-all 放进 conf.d 后必然成为新属主，若站点 vhost 里还留着 backlog，
+    # 下次 site tune apply 就会给同一 ip:port 设两次 → nginx 起不来。
+    # 所以这里自己写死 backlog，并把站点 vhost 上的摘掉。
+    local backlog="${NGINX_LISTEN_BACKLOG:-8192}"
+
+    cat > "$conf" << NGINXCONFIG
+# 兜底 server —— 由 site security anti-hijack 生成于 $(date '+%Y-%m-%d %H:%M:%S')
+# 未匹配任何 server_name 的请求直接断开连接(444)
+# 注意: backlog 归属在本文件(见 lib/tune.sh:apply_nginx_listen_backlog)，
+#       站点 vhost 里不应再出现 backlog=，否则同一 ip:port 重复设置会导致 nginx 启动失败
 server {
-    listen 80 default_server;
-    listen 443 ssl default_server;
+    listen 80 default_server backlog=${backlog};
+    listen 443 ssl default_server backlog=${backlog};
     server_name _;
-    
-    # SSL 证书
-    ssl_certificate $default_cert;
+
+    ssl_certificate     $default_cert;
     ssl_certificate_key $default_key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    
-    # 日志
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
     access_log /www/wwwlogs/default_access.log;
-    error_log /www/wwwlogs/default_error.log;
-    
-    # 返回 444 - 直接关闭连接
+    error_log  /www/wwwlogs/default_error.log;
+
     return 444;
 }
 NGINXCONFIG
-    
-    # 创建符号链接
-    ln -sf "/www/vhost/nginx/default" /etc/nginx/sites-enabled/default
-    
-    # 测试并重载 nginx
+
+    # 摘掉站点 vhost 上残留的 backlog（幂等；备份供回滚）
+    local stripped="" f
+    for f in "$NGINX_CONF_DIR"/*; do
+        [ -f "$f" ] || continue
+        grep -qE "listen[[:space:]]+[^;]*backlog=" "$f" 2>/dev/null || continue
+        cp -a "$f" "${f}.backlog.bak.$$"
+        sed -i -E "s/^([[:space:]]*listen[[:space:]]+[^;]*)[[:space:]]backlog=[0-9]+;/\1;/" "$f"
+        stripped="$stripped $f"
+        echo -e "  ${YELLOW}[backlog]${NC} 已从 $(basename "$f") 移除(归属改为 catch-all)"
+    done
+
+    # 旧版本可能把兜底站放在 sites-enabled/default，一并清掉避免两个 default_server
+    if [ -e /etc/nginx/sites-enabled/default ] && grep -q "server_name[[:space:]]*_;" /etc/nginx/sites-enabled/default 2>/dev/null; then
+        mv /etc/nginx/sites-enabled/default "/root/sites-enabled-default.bak.$$" 2>/dev/null
+        echo -e "  ${YELLOW}已移走旧的 sites-enabled/default(避免重复 default_server)${NC}"
+    fi
+
     if nginx -t 2>/dev/null; then
+        # backlog 改动需 restart 才能让已监听 socket 重新 listen()，但 restart 会瞬断；
+        # 这里只 reload（444 规则立即生效），backlog 留待下次重启生效，不为它断连。
         systemctl reload nginx
-        echo ""
-        echo -e "${GREEN}✅ HTTPS 防窜站功能已启用${NC}"
-        echo ""
-        echo "说明:"
-        echo "  • 访问未配置的域名时将直接关闭连接"
-        echo "  • 日志: /www/wwwlogs/default_access.log"
-        echo "  • 配置: /www/vhost/nginx/default"
+        for f in $stripped; do rm -f "${f}.backlog.bak.$$"; done
+        echo -e "${GREEN}✅ 防窜站已启用${NC}  配置: $conf"
+        echo -e "${YELLOW}提示: backlog 归属已改到 catch-all，需 systemctl restart nginx 才完全生效(可择机)${NC}"
     else
-        echo -e "${RED}❌ Nginx 配置测试失败${NC}"
-        rm -f "/etc/nginx/sites-enabled/default"
+        echo -e "${RED}❌ Nginx 配置测试失败，已回滚${NC}"
+        nginx -t 2>&1 | head -5
+        rm -f "$conf"
+        for f in $stripped; do mv -f "${f}.backlog.bak.$$" "$f"; done
         return 1
     fi
 }
@@ -2035,7 +2131,10 @@ show_help() {
     echo "站点管理:"
     echo "  site list               查看所有站点"
     echo "  site create <域名> <类型> [--root <目录>] [--name <项目名>]  创建站点 (php73/php80/php83/static/node/pm2/python/docker/proxy)"
-    echo "                          --name 指定项目标识(目录/vhost/日志用它), 域名只进 server_name; 省略则标识=域名"
+    echo "                          --name 指定项目标识(目录/vhost/日志用它), 域名只进 server_name; 省略则标识=第一个域名"
+    echo "                          <域名> 支持逗号分隔多域名共用一个 vhost, 如 \"admin.x.com,api.x.com\""
+    echo "  site alias <站点> add|remove <域名...>   增删已有站点的 server_name 别名"
+    echo "  site alias <站点> list                  查看该站点的全部 server_name"
     echo "  site delete <域名> [--config|--full|--backup]  删除站点"
     echo "  site enable <域名>      启用站点"
     echo "  site disable <域名>     禁用站点"
@@ -2182,6 +2281,7 @@ handle_cli() {
                 _do_site_delete "$2" "$mode" "$skip_confirm" || exit 1
             fi
             ;;
+        alias) shift; site_alias "$2" "$1" "${@:3}";;
         enable) [ -n "$2" ] && site_enable "$2" || echo "用法: site enable <域名>";;
         disable) [ -n "$2" ] && site_disable "$2" || echo "用法: site disable <域名>";;
         info) [ -n "$2" ] && site_info "$2" || echo "用法: site info <域名>";;
@@ -2595,7 +2695,7 @@ SUPCONF
                 *) ufw status;;
             esac;;
         security) case "$2" in
-                anti-hijack) enable_anti_hijack;;
+                anti-hijack) enable_anti_hijack "$3";;
                 *) security_menu;;
             esac;;
         check) do_health_check;;

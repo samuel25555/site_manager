@@ -741,6 +741,23 @@ setup_firewall() {
 }
 
 #---------------------------------------
+# 配置兜底 server(防窜站)
+#---------------------------------------
+setup_catch_all() {
+    echo ""
+    log_info "配置兜底 server(防窜站)..."
+
+    # 没有它时，任意指向本机的域名都会落到解析顺序里的第一个站点 ——
+    # 新机器建完第一个站点后，未配置的域名就能打开那个站点(常见是后台登录页)。
+    # 这一步依赖 site CLI(此时已由 install_panel 链接好)，非交互模式。
+    if command -v site &>/dev/null; then
+        site security anti-hijack --yes || log_warn "兜底 server 配置失败，可稍后手动执行: site security anti-hijack"
+    else
+        log_warn "site 命令不可用，跳过兜底 server；请稍后执行: site security anti-hijack"
+    fi
+}
+
+#---------------------------------------
 # 安装面板
 #---------------------------------------
 install_panel() {
@@ -1034,6 +1051,8 @@ main() {
     install_composer
 
     install_panel
+
+    setup_catch_all
 
     finish_install
 }
