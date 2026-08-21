@@ -1614,6 +1614,80 @@ security_menu() {
 # HTTPS 防窜站功能（catch-all 兜底 server）
 # 未匹配任何 server_name 的请求直接断开，避免回落到解析顺序里的第一个站点
 # —— 没有它时，任意指向本机的域名都能打开你的后台登录页。
+# Cloudflare 真实 IP 还原
+# 站点普遍在 CF 橙云后面，默认 nginx 日志记的是 CF 边缘 IP，$remote_addr 也是假的。
+# 后果：无法识别异常登录来源、按 IP 封禁失效、gmg2 入侵复查时查不到黑客真实 IP。
+# 本命令生成 conf.d 片段，把 $remote_addr 还原成访客真实 IP（对全部站点生效）。
+setup_cf_realip() {
+    local action="${1:-enable}"
+    local conf="/etc/nginx/conf.d/00-cloudflare-realip.conf"
+
+    if [ "$action" = "status" ]; then
+        if [ -f "$conf" ]; then
+            echo -e "${GREEN}✓ 已启用${NC}: $conf"
+            grep -c "^set_real_ip_from" "$conf" | xargs echo "  信任网段数:"
+            grep "^real_ip_header" "$conf"
+        else
+            echo -e "${YELLOW}未启用${NC}（日志记的是 Cloudflare 边缘 IP，非真实访客 IP）"
+        fi
+        return 0
+    fi
+
+    echo -e "${CYAN}配置 Cloudflare 真实 IP 还原...${NC}"
+
+    # 优先从 CF 官方拉取最新网段，失败用内置兜底（2026 版）
+    local v4 v6
+    v4=$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v4 2>/dev/null)
+    v6=$(curl -fsSL --max-time 10 https://www.cloudflare.com/ips-v6 2>/dev/null)
+    if [ -z "$v4" ] || [ -z "$v6" ]; then
+        echo -e "${YELLOW}无法拉取 CF 官方 IP 列表，使用内置兜底网段${NC}"
+        v4="173.245.48.0/20
+103.21.244.0/22
+103.22.200.0/22
+103.31.4.0/22
+141.101.64.0/18
+108.162.192.0/18
+190.93.240.0/20
+188.114.96.0/20
+197.234.240.0/22
+198.41.128.0/17
+162.158.0.0/15
+104.16.0.0/13
+104.24.0.0/14
+172.64.0.0/13
+131.0.72.0/22"
+        v6="2400:cb00::/32
+2606:4700::/32
+2803:f800::/32
+2405:b500::/32
+2405:8100::/32
+2a06:98c0::/29
+2c0f:f248::/32"
+    fi
+
+    {
+        echo "# Cloudflare 真实 IP 还原 —— 由 site security cf-realip 生成于 $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "# 让 \$remote_addr / 日志客户端 IP 变成访客真实 IP 而非 CF 边缘 IP。"
+        echo "# IP 段来源: https://www.cloudflare.com/ips/"
+        echo "$v4" | while read -r ip; do [ -n "$ip" ] && echo "set_real_ip_from $ip;"; done
+        echo "$v6" | while read -r ip; do [ -n "$ip" ] && echo "set_real_ip_from $ip;"; done
+        echo "real_ip_header CF-Connecting-IP;"
+    } > "${conf}.tmp"
+
+    mv -f "${conf}.tmp" "$conf"
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        echo -e "${GREEN}✅ CF 真实 IP 还原已启用${NC}  配置: $conf"
+        echo -e "  信任网段: $(grep -c '^set_real_ip_from' "$conf") 条"
+    else
+        echo -e "${RED}❌ Nginx 配置测试失败，已移除${NC}"
+        nginx -t 2>&1 | head -5
+        rm -f "$conf"
+        return 1
+    fi
+}
+
 enable_anti_hijack() {
     local assume_yes=""
     [ "$1" = "--yes" ] && assume_yes=1
@@ -2204,6 +2278,7 @@ show_help() {
         echo "  site firewall allow <端口>"
         echo "  site firewall deny <端口>"
         echo "  site security anti-hijack            启用 HTTPS 防窜站"
+        echo "  site security cf-realip [status]     还原 Cloudflare 后的访客真实 IP(日志/封禁生效)"
     echo ""
     echo "Web面板:"
     echo "  site panel start|stop|restart"
@@ -2696,6 +2771,7 @@ SUPCONF
             esac;;
         security) case "$2" in
                 anti-hijack) enable_anti_hijack "$3";;
+                cf-realip) setup_cf_realip "$3";;
                 *) security_menu;;
             esac;;
         check) do_health_check;;

@@ -745,16 +745,20 @@ setup_firewall() {
 #---------------------------------------
 setup_catch_all() {
     echo ""
-    log_info "配置兜底 server(防窜站)..."
+    log_info "配置 nginx 安全基线(CF 真实 IP + 防窜站)..."
 
-    # 没有它时，任意指向本机的域名都会落到解析顺序里的第一个站点 ——
-    # 新机器建完第一个站点后，未配置的域名就能打开那个站点(常见是后台登录页)。
-    # 这一步依赖 site CLI(此时已由 install_panel 链接好)，非交互模式。
-    if command -v site &>/dev/null; then
-        site security anti-hijack --yes || log_warn "兜底 server 配置失败，可稍后手动执行: site security anti-hijack"
-    else
-        log_warn "site 命令不可用，跳过兜底 server；请稍后执行: site security anti-hijack"
+    if ! command -v site &>/dev/null; then
+        log_warn "site 命令不可用，跳过；请稍后执行: site security cf-realip / site security anti-hijack"
+        return 0
     fi
+
+    # Cloudflare 真实 IP 还原：站点普遍在 CF 橙云后面，不配则日志全是 CF 边缘 IP，
+    # 无法识别异常登录来源、按 IP 封禁失效。不依赖已有站点/证书，尽早配。
+    site security cf-realip || log_warn "CF 真实 IP 还原失败，可稍后执行: site security cf-realip"
+
+    # 兜底 server：没有它时任意指向本机的域名都会落到解析顺序里的第一个站点 ——
+    # 新机器建完第一个站点后，未配置的域名就能打开那个站点(常见是后台登录页)。
+    site security anti-hijack --yes || log_warn "兜底 server 配置失败，可稍后执行: site security anti-hijack"
 }
 
 #---------------------------------------
