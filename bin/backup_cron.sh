@@ -244,7 +244,7 @@ backup_path() {
         # 兼容宝塔：清理特定路径子目录下的旧备份
         cleanup "$path_dir" "path_${name}_" "$keep"
         # 清理FTP上的旧备份
-        cleanup_ftp "path/${name}" "${name}_" "$keep"
+        cleanup_ftp "path/${name}" "path_${name}_" "$keep"
     else
         rm -f "$file"; log "备份失败: $target"
     fi
