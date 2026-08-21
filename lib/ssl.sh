@@ -296,9 +296,11 @@ _apply_ssl_to_vhost() {
         return 0
     fi
 
-    # 在 `listen 80;` 行后插入 SSL 块
+    # 在 `listen 80` 行后插入 SSL 块
+    # 注意: 必须容忍 listen 参数(如 site tune apply 注入的 backlog=8192、default_server)，
+    # 否则 tune 跑在签证书之前时这里匹配不到，443 块会静默漏注入。
     awk -v cert="$cert" -v key="$key" '
-        /^[[:space:]]*listen 80;[[:space:]]*$/ && !done {
+        /^[[:space:]]*listen[[:space:]]+80([[:space:]]+[^;]*)?;[[:space:]]*$/ && !done {
             print
             print "    listen 443 ssl http2;"
             print "    ssl_certificate     " cert ";"
@@ -315,7 +317,13 @@ _apply_ssl_to_vhost() {
         { print }
     ' "$vhost" > "$vhost.tmp" && mv "$vhost.tmp" "$vhost"
 
-    log_info "已注入 SSL 到 vhost: $vhost"
+    # 校验真的注入了，避免匹配失败却报成功
+    if grep -q "listen 443 ssl" "$vhost"; then
+        log_info "已注入 SSL 到 vhost: $vhost"
+    else
+        log_error "SSL 注入失败: $vhost 中未找到可匹配的 listen 80 行，请手工添加 443 监听"
+        return 1
+    fi
 }
 
 # 安装 certbot

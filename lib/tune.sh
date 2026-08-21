@@ -16,16 +16,16 @@ calc_nginx_params() {
     local mem_mb=$(get_memory_mb)
     local cores=$(get_cpu_cores)
 
-    if [ "$mem_mb" -ge 65536 ]; then
+    if [ "$mem_mb" -ge 62000 ]; then
         NGINX_WORKER_CONNECTIONS=51200
         NGINX_WORKER_RLIMIT=65535
-    elif [ "$mem_mb" -ge 16384 ]; then
+    elif [ "$mem_mb" -ge 15500 ]; then
         NGINX_WORKER_CONNECTIONS=30720
         NGINX_WORKER_RLIMIT=51200
-    elif [ "$mem_mb" -ge 8192 ]; then
+    elif [ "$mem_mb" -ge 7800 ]; then
         NGINX_WORKER_CONNECTIONS=20480
         NGINX_WORKER_RLIMIT=30720
-    elif [ "$mem_mb" -ge 4096 ]; then
+    elif [ "$mem_mb" -ge 3900 ]; then
         NGINX_WORKER_CONNECTIONS=10240
         NGINX_WORKER_RLIMIT=20480
     else
@@ -38,22 +38,22 @@ calc_nginx_params() {
 calc_mariadb_params() {
     local mem_mb=$(get_memory_mb)
 
-    if [ "$mem_mb" -ge 65536 ]; then
+    if [ "$mem_mb" -ge 62000 ]; then
         MYSQL_INNODB_BUFFER="32G"
         MYSQL_MAX_CONNECTIONS=500
         MYSQL_KEY_BUFFER="1024M"
         MYSQL_TMP_TABLE="512M"
-    elif [ "$mem_mb" -ge 16384 ]; then
+    elif [ "$mem_mb" -ge 15500 ]; then
         MYSQL_INNODB_BUFFER="4G"
         MYSQL_MAX_CONNECTIONS=300
         MYSQL_KEY_BUFFER="512M"
         MYSQL_TMP_TABLE="256M"
-    elif [ "$mem_mb" -ge 8192 ]; then
+    elif [ "$mem_mb" -ge 7800 ]; then
         MYSQL_INNODB_BUFFER="2G"
         MYSQL_MAX_CONNECTIONS=200
         MYSQL_KEY_BUFFER="256M"
         MYSQL_TMP_TABLE="128M"
-    elif [ "$mem_mb" -ge 4096 ]; then
+    elif [ "$mem_mb" -ge 3900 ]; then
         MYSQL_INNODB_BUFFER="1G"
         MYSQL_MAX_CONNECTIONS=150
         MYSQL_KEY_BUFFER="128M"
@@ -70,25 +70,25 @@ calc_mariadb_params() {
 calc_php_params() {
     local mem_mb=$(get_memory_mb)
 
-    if [ "$mem_mb" -ge 65536 ]; then
+    if [ "$mem_mb" -ge 62000 ]; then
         PHP_MAX_CHILDREN=300
         PHP_START_SERVERS=30
         PHP_MIN_SPARE=20
         PHP_MAX_SPARE=50
         PHP_OPCACHE_MEM=512
-    elif [ "$mem_mb" -ge 16384 ]; then
+    elif [ "$mem_mb" -ge 15500 ]; then
         PHP_MAX_CHILDREN=150
         PHP_START_SERVERS=20
         PHP_MIN_SPARE=10
         PHP_MAX_SPARE=30
         PHP_OPCACHE_MEM=256
-    elif [ "$mem_mb" -ge 8192 ]; then
+    elif [ "$mem_mb" -ge 7800 ]; then
         PHP_MAX_CHILDREN=80
         PHP_START_SERVERS=10
         PHP_MIN_SPARE=5
         PHP_MAX_SPARE=20
         PHP_OPCACHE_MEM=192
-    elif [ "$mem_mb" -ge 4096 ]; then
+    elif [ "$mem_mb" -ge 3900 ]; then
         PHP_MAX_CHILDREN=50
         PHP_START_SERVERS=5
         PHP_MIN_SPARE=3
