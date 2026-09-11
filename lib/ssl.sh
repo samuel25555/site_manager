@@ -1,8 +1,10 @@
 #!/bin/bash
 # SSL 证书管理 - 支持多账号
 
-# cron 的 PATH 不含 /usr/local/bin，certbot wrapper 在那里
-export PATH="/usr/local/bin:$PATH"
+# root crontab 默认 PATH 只有 /usr/bin:/bin：certbot wrapper 在 /usr/local/bin，nginx 在 /usr/sbin。
+# 2026-09-11 up 站事故：只补了 /usr/local/bin，nginx -t 在 cron 下 command not found → 续期后从不 reload，
+# 源站一直用旧证书直到过期。这里把 sbin 一并补上。
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 CONFIG_DIR="${ROOT_DIR:-/opt/site_manager}/config"
 SSL_DIR="${SSL_DIR:-/www/ssl}"
@@ -672,7 +674,14 @@ ssl_renew() {
     ssl_log "----------------------------------------------------------------------------"
     ssl_log ""
 
-    [ "$renewed" -gt 0 ] && nginx_reload 2>/dev/null
+    # 有证书更新就必须 reload，否则 nginx 继续用内存里的旧证书；结果写进 ssl.log 便于事后核对
+    if [ "$renewed" -gt 0 ]; then
+        if nginx_reload >>"$SSL_LOG" 2>&1; then
+            ssl_log "nginx 已重载，新证书生效"
+        else
+            ssl_log "!!! nginx 重载失败，新证书未生效，请手动执行: nginx -t && systemctl reload nginx"
+        fi
+    fi
 
     log_success "续期检查完成: 成功 $renewed, 跳过 $skipped, 失败 $failed"
 }
