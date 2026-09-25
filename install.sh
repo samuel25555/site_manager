@@ -1,7 +1,7 @@
 #!/bin/bash
 #===============================================================================
 # Site Manager 安装脚本
-# 支持: Debian 10/11/12, Ubuntu 20.04/22.04/24.04
+# 支持: Debian 10/11/12/13, Ubuntu 20.04/22.04/24.04
 # 用法: curl -sSL https://raw.githubusercontent.com/xxx/site_manager/master/install.sh | bash
 #===============================================================================
 
@@ -146,10 +146,10 @@ check_system() {
     # 验证支持的系统
     case "$OS_ID" in
         debian)
-            if [[ "$OS_VERSION" =~ ^(10|11|12)$ ]]; then
+            if [[ "$OS_VERSION" =~ ^(10|11|12|13)$ ]]; then
                 log_success "系统: Debian $OS_VERSION"
             else
-                log_error "不支持的 Debian 版本: $OS_VERSION (支持 10/11/12)"
+                log_error "不支持的 Debian 版本: $OS_VERSION (支持 10/11/12/13)"
                 exit 1
             fi
             ;;

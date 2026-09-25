@@ -16,7 +16,10 @@ install_nginx() {
 
     case "$PM" in
         apt)
-            curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/keyrings/nginx.gpg 2>/dev/null
+            # 最小化系统(如 Debian 13 裸机)可能没有 gpg，缺了会静默导入失败并退回装发行版 nginx
+            command -v gpg &>/dev/null || apt-get install -y gnupg
+            mkdir -p /etc/apt/keyrings
+            curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor --yes -o /etc/apt/keyrings/nginx.gpg || install_failed "Nginx(签名密钥)"
             echo "deb [signed-by=/etc/apt/keyrings/nginx.gpg] http://nginx.org/packages/debian $(lsb_release -cs) nginx" > /etc/apt/sources.list.d/nginx.list
             apt-get update && apt-get install -y nginx || install_failed "Nginx"
             ;;
