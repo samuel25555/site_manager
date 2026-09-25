@@ -535,6 +535,7 @@ _do_site_create() {
     local php_version="$3"
     local custom_root="$4"
     local proj_name="$5"
+    local target="$6"
 
     # 支持逗号分隔的多域名: 全部进 server_name, 第一个作默认项目标识
     # 例: site create "admin.x.com,admin1.x.com,api.x.com" php80
@@ -571,6 +572,16 @@ _do_site_create() {
     local conf_path="$NGINX_CONF_DIR/$identity"
 
     [ -f "$conf_path" ] && echo -e "${RED}站点已存在${NC}" && return 1
+
+    # proxy 必须有代理目标：在建目录/写配置之前检查，避免留下半成品
+    if [ "$type" = "proxy" ] && [ -z "$target" ]; then
+        # 非交互(ssh 远程/脚本)必须用 --target 传入；交互终端才提示输入
+        [ -t 0 ] && read -p "代理目标 (如 http://127.0.0.1:3000): " target
+        if [ -z "$target" ]; then
+            echo -e "${RED}代理站点需要代理目标: site create <域名> proxy --target http://127.0.0.1:<端口>${NC}"
+            return 1
+        fi
+    fi
 
     # PHP 站点检查并安装
     if [[ "$type" == "php" && -n "$php_version" ]]; then
@@ -645,13 +656,19 @@ NGINX
 }
 NGINX
     elif [ "$type" = "proxy" ]; then
-        read -p "代理目标 (如 http://127.0.0.1:3000): " target
         cat >> "$conf_path" << NGINX
 
     location / {
         proxy_pass $target;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_cache_bypass \$http_upgrade;
+        proxy_read_timeout 3600s;
     }
 }
 NGINX
@@ -2291,13 +2308,15 @@ handle_cli() {
         list) site_list;;
         create) [ -n "$2" ] && [ -n "$3" ] && {
             domain="$2"; type_arg="$3"
-            local type="" php_version="" port="" custom_root="" proj_name=""
-            # 解析 --root / --name (顺序无关)
+            local type="" php_version="" port="" custom_root="" proj_name="" proxy_target=""
+            # 解析 --root / --name / --target (顺序无关)
             local _extra=("${@:4}") _i=0
             while [ $_i -lt ${#_extra[@]} ]; do
                 case "${_extra[$_i]}" in
                     --root) custom_root="${_extra[$((_i+1))]}"; _i=$((_i+2));;
                     --name) proj_name="${_extra[$((_i+1))]}"; _i=$((_i+2));;
+                    --target) proxy_target="${_extra[$((_i+1))]}"; _i=$((_i+2));;
+                    --target=*) proxy_target="${_extra[$_i]#*=}"; _i=$((_i+1));;
                     *) _i=$((_i+1));;
                 esac
             done
@@ -2321,8 +2340,8 @@ handle_cli() {
                 echo "无效类型: $type_arg (支持: php73/php80/php83/static/node/pm2/python/docker/proxy)"
                 exit 1
             fi
-            _do_site_create "$domain" "$type" "$php_version" "$custom_root" "$proj_name"
-        } || echo "用法: site create <域名> <类型> [--root <目录>] [--name <项目名>] (php73/php80/php83/static/node/pm2/python/docker/proxy)";;
+            _do_site_create "$domain" "$type" "$php_version" "$custom_root" "$proj_name" "$proxy_target"
+        } || echo "用法: site create <域名> <类型> [--root <目录>] [--name <项目名>] [--target <url>] (php73/php80/php83/static/node/pm2/python/docker/proxy；proxy 用 --target 指定代理目标)";;
         delete)
             if [ -z "$2" ]; then
                 echo "用法: site delete <域名> [选项]"
