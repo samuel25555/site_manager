@@ -11,7 +11,7 @@
 #
 # 输出: $BACKUP_DIR/server/server_<主机>_YYYYMMDD_HHMMSS.tar.gz (600 权限)
 # FTP:  $FTP_PATH/server/ （与 db/site/path 同一 FTP 账号）
-# 用法: server_config_backup.sh [保留份数]   (默认 30)
+# 用法: server_config_backup.sh [保留份数]   (默认 5)
 #===============================================================================
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -19,7 +19,7 @@ source /opt/site_manager/config/backup.conf 2>/dev/null
 source /opt/site_manager/config/site_manager.conf 2>/dev/null
 
 BACKUP_DIR="${BACKUP_DIR:-/www/backup}"
-KEEP="${1:-${SERVER_KEEP:-30}}"
+KEEP="${1:-${SERVER_KEEP:-5}}"
 DEST="$BACKUP_DIR/server"
 LOG_FILE="/www/wwwlogs/site_manager/backup.log"
 HOST="${FTP_PATH##*/}"; HOST="${HOST:-$(hostname -s)}"

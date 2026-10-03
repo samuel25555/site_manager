@@ -7,8 +7,8 @@
 | 数据库 | `site backup db` | `<机器>/database/mysql/<库>/` | 每小时 / 51 份 |
 | 代码 wwwroot | `site backup path /www/wwwroot` | `<机器>/path/wwwroot/` | 每天 04:00 / 5 份 |
 | 后台站点 | `site backup site <域名>` | `<机器>/site/<域名>/` | 每天 / 5 份 |
-| **服务器配置** | `site backup server` | `<机器>/server/` | 每天 04:45 / 30 份 |
-| **Cloudflare 配置** | dev `cf_backup.py backup` | `DEV1/cloudflare/` | 每天 02:50 / 30 份 |
+| **服务器配置** | `site backup server` | `<机器>/server/` | 每天 04:45 / 5 份 |
+| **Cloudflare 配置** | dev `cf_backup.py backup` | `DEV1/cloudflare/` | 每天 02:50 / 5 份 |
 | dev 管理中枢 | dev `dev_infra_backup.sh` | `DEV1/infra/` | 每天 02:40 / 14 份 |
 
 `<机器>` 是各机 backup.conf 的 FTP_PATH（mru 仍叫 `consenys`）。
