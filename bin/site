@@ -2245,6 +2245,7 @@ show_help() {
     echo "  site backup site [域名]   备份站点 (不指定则备份全部)"
     echo "  site backup db [库名]     备份数据库 (不指定则备份全部)"
     echo "  site backup path <路径>   备份指定目录"
+    echo "  site backup server [保留数] 备份服务器配置(nginx/证书/cron/supervisor/MySQL账号等)"
     echo "  site backup list          查看备份列表"
     echo "  site backup config        查看/修改备份配置"
     echo "  site restore <域名> <文件>  恢复站点"
@@ -2428,6 +2429,9 @@ handle_cli() {
             esac;;
         backup)
             case "$2" in
+                server)
+                    /opt/site_manager/scripts/server_config_backup.sh "$3"
+                    ;;
                 site|db|path|all)
                     # 统一调用 backup_cron.sh，内置包装器日志
                     /opt/site_manager/bin/backup_cron.sh "$2" "$3" "$4"

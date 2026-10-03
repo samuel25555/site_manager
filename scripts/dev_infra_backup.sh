@@ -11,16 +11,20 @@ TS=$(date +%Y-%m-%d_%H-%M-%S)
 mkdir -p "$DEST"
 OUT="$DEST/dev_infra_${TS}.tar.gz"
 
-# 命脉:全机队 DNS/SSL/监控配置+token、CF/NameSilo 凭据与工具、机队访问密钥
+# 命脉:全机队 DNS/SSL/监控配置+token、CF/NameSilo 凭据与工具、机队访问密钥、
+# FTP 备份服务账号、authelia/openvscode 认证、没有远程仓库的本地项目
 # 排除可再生的截图/日志/缓存/大归档
 tar czf "$OUT" \
   --exclude='*/h5_screenshots' --exclude='*/vt_screenshots' --exclude='*/vt_screenshots_h5' \
   --exclude='*/archive' --exclude='*/logs' --exclude='*/__pycache__' \
-  --exclude='*/.venv' --exclude='*/pyenv' --exclude='*.7z' --exclude='*.jsonl' \
+  --exclude='*/.venv' --exclude='*/venv' --exclude='*/node_modules' --exclude='*/pyenv' --exclude='*.7z' --exclude='*.jsonl' \
   /opt/site_manager/config \
   /opt/projects/other/cloudflare_dns \
   /root/.ssh/config /root/.ssh/id_ed25519 /root/.ssh/id_ed25519.pub /root/.ssh/id_fleet_ed25519 /root/.ssh/id_fleet_ed25519.pub /root/.ssh/github_ed25519 \
   /root/.claude/skills /root/.claude/settings.json /root/.claude/hooks /root/.claude/projects /root/tools \
+  /opt/ftp-server/config.json /opt/ftp-server/app.py /opt/ftp-server/sync_jp.sh /opt/ftp-server/sync_mirror.sh /opt/ftp-server/README.md \
+  /opt/authelia /opt/vscode-auth/auth_server.py /opt/vscode-auth/config.json \
+  /opt/projects/other/product_cleanup /opt/projects/other/site-monitor /opt/projects/other/usdt-pay \
   2>/dev/null || true
 
 # 保留最近 KEEP 份
