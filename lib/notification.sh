@@ -59,6 +59,11 @@ ${message}
         -d "text=${text}" 2>&1)
 
     if echo "$response" | grep -q '"ok":true'; then
+        # 每条发出的消息都记 message_id, 发错了凭它撤回: tg-send <chat> --delete <mid>
+        local mid=$(echo "$response" | grep -o '"message_id":[0-9]*' | head -1 | cut -d: -f2)
+        mkdir -p /www/wwwlogs/site_manager 2>/dev/null
+        echo "[$(date '+%F %T')] SENT chat=${TG_CHAT_ID} message_id=${mid} [${level}] ${title}" \
+            >> /www/wwwlogs/site_manager/telegram.log 2>/dev/null
         return 0
     else
         echo "Telegram 发送失败: $response" >&2
