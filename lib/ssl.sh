@@ -358,10 +358,22 @@ ssl_setup_hooks() {
 
     if [ -f "$source_script" ]; then
         mkdir -p "$hook_dir"
-        # 始终刷新为最新版（旧版只 reload、不同步 /www/ssl，必须覆盖更新）
-        cp -f "$source_script" "$hook_script"
-        chmod +x "$hook_script"
-        log_info "已安装/更新 Certbot Post-Hook: $hook_script"
+        # 缺失或与仓库版本不同就覆盖（旧版只 reload、不同步 /www/ssl，必须更新）
+        if ! cmp -s "$source_script" "$hook_script"; then
+            cp -f "$source_script" "$hook_script"
+            chmod +x "$hook_script"
+            log_info "已安装/更新 Certbot Post-Hook: $hook_script"
+        fi
+    fi
+
+    # 续期统一由 cron 的 `site ssl renew` 负责；屏蔽系统 certbot.timer，避免两套调度并存
+    # （mask 后 apt 升级 certbot 也不会重新启用）
+    if command -v systemctl >/dev/null 2>&1 && systemctl cat certbot.timer >/dev/null 2>&1; then
+        if [ "$(systemctl is-enabled certbot.timer 2>/dev/null)" != "masked" ]; then
+            systemctl disable --now certbot.timer >/dev/null 2>&1
+            systemctl mask certbot.timer >/dev/null 2>&1
+            log_info "已屏蔽 certbot.timer（续期统一走 site ssl renew）"
+        fi
     fi
 }
 
@@ -401,17 +413,38 @@ ssl_request() {
     check_root
     _ssl_init
 
+    case "$domains_input" in
+        -h|--help|help)
+            echo "用法: site ssl <域名> [--dns] [--wildcard]"
+            echo "多域名: site ssl \"a.com,b.com\" --dns"
+            echo "完整帮助: site ssl"
+            return 0;;
+    esac
+
     if [ -z "$domains_input" ]; then
         log_error "用法: site ssl <域名> [--dns] [--wildcard]"
         log_info "多域名: site ssl \"a.com,b.com\" --dns"
         return 1
     fi
 
+    # 先校验域名再建目录，避免 `site ssl --xxx` 之类误输入在 /www/ssl 下留下垃圾目录
+    local _d
+    IFS=',' read -ra _check_domains <<< "$domains_input"
+    for _d in "${_check_domains[@]}"; do
+        if ! [[ "$_d" =~ ^(\*\.)?[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$ ]]; then
+            log_error "无效域名: $_d"
+            log_info "用法: site ssl <域名> [--dns] [--wildcard]"
+            return 1
+        fi
+    done
+
     # 检查 certbot
     if ! command_exists certbot; then
         log_warn "certbot 未安装，正在安装..."
         ssl_install || return 1
     fi
+    # certbot 可能由 setup_python_env.sh 预装，ssl_install 不会走到装 hook，这里补齐
+    ssl_setup_hooks
 
     local use_dns=false
     local wildcard=false
@@ -583,6 +616,8 @@ _get_cert_days_left() {
 ssl_renew() {
     check_root
     _ssl_init
+    # 每晚 cron 顺带自愈：缺 post hook 的机器补上，certbot.timer 屏蔽掉
+    ssl_setup_hooks
 
     ssl_log "----------------------------------------------------------------------------"
     ssl_log "☆ 开始执行: SSL 证书续期检查"
