@@ -18,4 +18,7 @@ FTP_PORT=21
 FTP_USER="your_ftp_user"
 FTP_PASS="your_ftp_password"
 FTP_PATH="/backup"  # 建议使用服务器标识，如 /SERVER1, /SERVER2
+# 同机多业务时，指定的库/站点单独放一个 FTP 目录：FTP_PATH_MAP="名字=FTP目录 ..."（名字 = 库名或 wwwroot 下的目录名）
+# 整个 wwwroot 的备份会排除这些站点，要另加 "site backup path /www/wwwroot/<站点>" 定时任务
+# FTP_PATH_MAP="mru=/VK admin.musicvk11.com=/VK"
 FTP_DELETE_LOCAL=false

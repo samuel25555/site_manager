@@ -38,6 +38,24 @@ mkdir -p "$DB_BACKUP_DIR" "$SITE_BACKUP_DIR" "$PATH_BACKUP_DIR" "$(dirname $LOG_
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
 
+# 同机多业务：指定的库/站点单独放一个 FTP 目录（backup.conf 里 FTP_PATH_MAP="名字=FTP目录 ..."，
+# 名字 = 库名或 /www/wwwroot 下的目录名）。没列出的照旧用 FTP_PATH。
+ftp_base() {
+    local n="$1" p
+    for p in $FTP_PATH_MAP; do [ "${p%%=*}" = "$n" ] && { echo "${p#*=}"; return; }; done
+    echo "$FTP_PATH"
+}
+
+# 整个 wwwroot 打包时排除 FTP_PATH_MAP 里的站点（它们由 "path /www/wwwroot/<站点>" 单独备份到自己的目录）
+get_map_exclude_args() {
+    local p n args=""
+    for p in $FTP_PATH_MAP; do
+        n="${p%%=*}"
+        [ -e "$SITES_DIR/$n" ] && args="$args --exclude=$(basename "$SITES_DIR")/$n"
+    done
+    echo "$args"
+}
+
 # 生成排除参数
 get_exclude_args() {
     local args=""
@@ -50,10 +68,10 @@ get_exclude_args() {
 
 # FTP上传
 upload_ftp() {
-    local file="$1" subdir="$2"
+    local file="$1" subdir="$2" base; base="$(ftp_base "$3")"
     [ "$FTP_ENABLED" != "true" ] || [ -z "$FTP_HOST" ] && return 0
-    log "上传FTP: $(basename "$file")"
-    if curl -s -T "$file" "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/${subdir}/$(basename "$file")" \
+    log "上传FTP: ${base}/${subdir}/$(basename "$file")"
+    if curl -s -T "$file" "ftp://${FTP_HOST}:${FTP_PORT}${base}/${subdir}/$(basename "$file")" \
         --user "${FTP_USER}:${FTP_PASS}" --ftp-create-dirs 2>/dev/null; then
         log "FTP上传成功"
         [ "$FTP_DELETE_LOCAL" = "true" ] && rm -f "$file"
@@ -74,14 +92,14 @@ cleanup() {
 
 # 清理FTP旧备份
 cleanup_ftp() {
-    local ftp_dir="$1" pattern="$2" keep="$3"
+    local ftp_dir="$1" pattern="$2" keep="$3" base; base="$(ftp_base "$4")"
     [ "$FTP_ENABLED" != "true" ] || [ -z "$FTP_HOST" ] && return 0
 
     log "清理FTP旧备份: $ftp_dir (保留${keep}份)"
 
     local files
     files=$(curl -s --list-only \
-        "ftp://${FTP_HOST}:${FTP_PORT}${FTP_PATH}/${ftp_dir}/" \
+        "ftp://${FTP_HOST}:${FTP_PORT}${base}/${ftp_dir}/" \
         --user "${FTP_USER}:${FTP_PASS}" 2>/dev/null | grep "^${pattern}" | sort)
 
     local total
@@ -101,7 +119,7 @@ cleanup_ftp() {
         [ -z "$f" ] && continue
         curl -s "ftp://${FTP_HOST}:${FTP_PORT}/" \
             --user "${FTP_USER}:${FTP_PASS}" \
-            --quote "DELE ${FTP_PATH}/${ftp_dir}/${f}" > /dev/null 2>&1
+            --quote "DELE ${base}/${ftp_dir}/${f}" > /dev/null 2>&1
     done
 
     log "FTP清理完成: 删除${del_count}份，保留${keep}份"
@@ -124,11 +142,11 @@ backup_db_one() {
         gzip -f "$file"
         log "备份成功: $db ($(du -h "${file}.gz" | cut -f1))"
         # 兼容宝塔：FTP上传到 database/mysql/{db}/ 子目录
-        upload_ftp "${file}.gz" "database/mysql/${db}"
+        upload_ftp "${file}.gz" "database/mysql/${db}" "$db"
         # 兼容宝塔：清理特定数据库子目录下的旧备份
         cleanup "$db_dir" "${db}_" "$keep"
         # 清理FTP上的旧备份
-        cleanup_ftp "database/mysql/${db}" "${db}_" "$keep"
+        cleanup_ftp "database/mysql/${db}" "${db}_" "$keep" "$db"
     else
         rm -f "$file"; log "备份失败: $db"; return 1
     fi
@@ -172,11 +190,11 @@ backup_site_one() {
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         log "备份成功: $site ($(du -h "$file" | cut -f1))"
         # 兼容宝塔：FTP上传到 site/{site}/ 子目录
-        upload_ftp "$file" "site/${site}"
+        upload_ftp "$file" "site/${site}" "$site"
         # 兼容宝塔：清理特定站点子目录下的旧备份
         cleanup "$site_dir" "${site}_" "$keep"
         # 清理FTP上的旧备份
-        cleanup_ftp "site/${site}" "${site}_" "$keep"
+        cleanup_ftp "site/${site}" "${site}_" "$keep" "$site"
     else
         rm -f "$file"; log "备份失败: $site"; return 1
     fi
@@ -190,7 +208,7 @@ backup_site_all() {
     local wwwroot_dir="$SITE_BACKUP_DIR/wwwroot"
     mkdir -p "$wwwroot_dir"
 
-    local exclude_args=$(get_exclude_args)
+    local exclude_args="$(get_exclude_args) $(get_map_exclude_args)"
     local file="$wwwroot_dir/wwwroot_$(date +%Y%m%d_%H%M%S).tar.gz"
 
     log "打包: $SITES_DIR"
@@ -226,6 +244,7 @@ backup_path() {
     log "目录: $target"
 
     local exclude_args=$(get_exclude_args)
+    [ "$(readlink -f "$target")" = "$(readlink -f "$SITES_DIR")" ] && exclude_args="$exclude_args $(get_map_exclude_args)"
     local name=$(basename "$target")
 
     # 兼容宝塔：每个路径独立子目录
@@ -240,11 +259,11 @@ backup_path() {
     if [ $? -eq 0 ] && [ -s "$file" ]; then
         log "备份成功: $name ($(du -h "$file" | cut -f1))"
         # 兼容宝塔：FTP上传到 path/{name}/ 子目录
-        upload_ftp "$file" "path/${name}"
+        upload_ftp "$file" "path/${name}" "$name"
         # 兼容宝塔：清理特定路径子目录下的旧备份
         cleanup "$path_dir" "path_${name}_" "$keep"
         # 清理FTP上的旧备份
-        cleanup_ftp "path/${name}" "path_${name}_" "$keep"
+        cleanup_ftp "path/${name}" "path_${name}_" "$keep" "$name"
     else
         rm -f "$file"; log "备份失败: $target"
     fi
