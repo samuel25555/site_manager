@@ -127,8 +127,14 @@ _generate_cloudflare_ini() {
     # 从配置获取凭据
     local email=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .email' "$DNS_ACCOUNTS_FILE")
     local api_key=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .api_key' "$DNS_ACCOUNTS_FILE")
+    local api_token=$(jq -r --arg a "$alias" '.cloudflare[] | select(.alias == $a) | .api_token // empty' "$DNS_ACCOUNTS_FILE")
 
-    if [ -n "$email" ] && [ -n "$api_key" ]; then
+    if [ -n "$api_token" ]; then
+        cat > "$cred_file" << EOF
+dns_cloudflare_api_token = $api_token
+EOF
+        chmod 600 "$cred_file"
+    elif [ -n "$email" ] && [ -n "$api_key" ]; then
         cat > "$cred_file" << EOF
 dns_cloudflare_email = $email
 dns_cloudflare_api_key = $api_key
