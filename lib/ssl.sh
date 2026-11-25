@@ -632,6 +632,8 @@ ssl_renew() {
     local renewed=0
     local skipped=0
     local failed=0
+    local failed_domains=""
+    local reload_failed=0
 
     # 遍历所有证书
     for cert_dir in /etc/letsencrypt/live/*/; do
@@ -674,6 +676,7 @@ ssl_renew() {
 
             if [ -z "$cred" ]; then
                 ssl_log "失败 $domain: 未找到 DNS 凭据"
+                failed_domains="$failed_domains $domain"
                 ((failed++))
                 continue
             fi
@@ -689,6 +692,7 @@ ssl_renew() {
                 ((renewed++))
             else
                 ssl_log "续期失败: $domain"
+                failed_domains="$failed_domains $domain"
                 ((failed++))
             fi
         else
@@ -699,6 +703,7 @@ ssl_renew() {
                 ((renewed++))
             else
                 ssl_log "续期失败: $domain"
+                failed_domains="$failed_domains $domain"
                 ((failed++))
             fi
         fi
@@ -720,8 +725,27 @@ ssl_renew() {
         if nginx_reload >>"$SSL_LOG" 2>&1; then
             ssl_log "nginx 已重载，新证书生效"
         else
+            reload_failed=1
             ssl_log "!!! nginx 重载失败，新证书未生效，请手动执行: nginx -t && systemctl reload nginx"
         fi
+    fi
+
+    # 2026-11-25：续期结果落盘，供 dev 每日巡检 /root/bin/ssl-watch.sh 读取告警
+    # （此前失败只写日志、无人知晓，导致 vk/tempora 静默失败到证书过期）
+    local state_dir=/var/lib/site_manager
+    mkdir -p "$state_dir" 2>/dev/null
+    if [ "$failed" -gt 0 ] || [ "$reload_failed" -gt 0 ]; then
+        {
+            echo "ts=$(date '+%F %T')"
+            echo "host=$(hostname)"
+            echo "failed=$failed"
+            echo "renewed=$renewed"
+            echo "skipped=$skipped"
+            echo "domains=${failed_domains# }"
+            echo "nginx_reload=$([ "$reload_failed" -gt 0 ] && echo fail || echo ok)"
+        } > "$state_dir/ssl_renew_failed"
+    else
+        rm -f "$state_dir/ssl_renew_failed"
     fi
 
     log_success "续期检查完成: 成功 $renewed, 跳过 $skipped, 失败 $failed"
