@@ -15,7 +15,7 @@
 #   site country-block allow <IP/CIDR> # 白名单（在 deny 之前放行）
 #   site country-block unallow <IP/CIDR>
 #   site country-block update          # 重新拉取 RIR 数据并生效
-#   site country-block cron on|off     # 每日自动更新（/etc/cron.d/site-country-block）
+#   site country-block cron on|off     # 每日检查更新（缓存 7 天，/etc/cron.d/site-country-block）
 
 CB_CONF="/opt/site_manager/config/country_block.conf"
 CB_TEMPLATE="/opt/site_manager/config/country_block.conf.template"
@@ -226,8 +226,8 @@ cb_cron() {
     case "${1:-}" in
         on)
             cat > "$CB_CRON" <<EOF
-# Site Manager 全站国家访问控制：每日刷新 RIR 数据
-17 4 * * * root /usr/local/bin/site country-block update >/dev/null 2>&1
+# Site Manager 全站国家访问控制：每日检查，RIR 缓存超过 7 天才重新下载
+17 4 * * * root /usr/local/bin/site country-block apply >/dev/null 2>&1
 EOF
             chmod 644 "$CB_CRON"
             cat > /etc/logrotate.d/site-country-block <<'EOF'
@@ -240,7 +240,7 @@ EOF
 }
 EOF
             chmod 644 /etc/logrotate.d/site-country-block
-            echo -e "${GREEN}已开启每日自动更新（04:17）${NC}"
+            echo -e "${GREEN}已开启每日检查更新（04:17；RIR 数据缓存 7 天）${NC}"
             ;;
         off)
             rm -f "$CB_CRON" /etc/logrotate.d/site-country-block
@@ -262,7 +262,7 @@ cb_menu() {
     echo "  site country-block allow <IP/CIDR>...   加白名单（优先于国家拦截）"
     echo "  site country-block unallow <IP/CIDR>... 移除白名单"
     echo "  site country-block update               重新拉取 RIR 数据并生效"
-    echo "  site country-block cron on|off          每日自动更新开关"
+    echo "  site country-block cron on|off          每日检查更新开关（缓存 7 天）"
     echo ""
     echo "说明: 规则写在 nginx http 级（$CB_DEFAULT_OUT），"
     echo "      对现有和以后新建的所有站点生效，与后台「访问地区控制」无关。"
