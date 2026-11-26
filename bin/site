@@ -1614,6 +1614,7 @@ security_menu() {
     echo " 5) 封禁端口"
     echo " 6) 删除规则"
     echo " 7) HTTPS 防窜站"
+    echo " 8) 全站国家访问控制(查看)"
     echo " 0) 返回"
     echo ""
     read -p "选择: " c
@@ -1625,6 +1626,8 @@ security_menu() {
         5) read -p "端口: " p; ufw deny "$p/tcp" && echo -e "${GREEN}已封禁${NC}";;
         6) ufw status numbered; read -p "规则编号: " n; echo y | ufw delete "$n";;
         7) enable_anti_hijack;;
+        8) source /opt/site_manager/lib/countryblock.sh; country_block status
+           echo "  修改请用: site country-block on|off|set <CC>|allow <IP>";;
     esac
 }
 
@@ -2297,6 +2300,8 @@ show_help() {
         echo "  site firewall deny <端口>"
         echo "  site security anti-hijack            启用 HTTPS 防窜站"
         echo "  site security cf-realip [status]     还原 Cloudflare 后的访客真实 IP(日志/封禁生效)"
+        echo "  site country-block [status|on|off]   全站按国家拦/放行(nginx http 级,对所有站点生效)"
+        echo "  site country-block set <CC>...       设定拦截国家, 如: set CN"
     echo ""
     echo "Web面板:"
     echo "  site panel start|stop|restart"
@@ -2795,8 +2800,13 @@ SUPCONF
         security) case "$2" in
                 anti-hijack) enable_anti_hijack "$3";;
                 cf-realip) setup_cf_realip "$3";;
+                country-block) source /opt/site_manager/lib/countryblock.sh; country_block "${@:3}";;
                 *) security_menu;;
             esac;;
+        country-block|countryblock|cb)
+            source /opt/site_manager/lib/countryblock.sh
+            country_block "${@:2}"
+            ;;
         check) do_health_check;;
         tune) site_tune "$2";;
         monitor)

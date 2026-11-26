@@ -1,0 +1,13 @@
+# Site Manager —— 全站国家访问控制配置（由 site country-block 维护，可手工编辑后 apply）
+#
+# 说明：
+#   - 规则生成到 nginx http 级（CB_OUT），对现有和以后新建的所有站点生效
+#   - 与各后台自己的「访问地区控制」互不影响
+#   - 国家用 ISO 3166-1 两位代码（CN/US/JP/HK/MO/TW...），空格分隔
+#   - 模式：block=只拦列表里的国家；allow=只放行列表国家，其余全拦
+#   - CB_ALLOW_IPS 里的 IP/CIDR 永远放行（写在 deny 之前）
+CB_ENABLED=1
+CB_MODE="block"
+CB_COUNTRIES="CN"
+CB_ALLOW_IPS=""
+CB_OUT="/etc/nginx/conf.d/00-country-block.conf"

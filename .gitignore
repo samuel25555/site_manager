@@ -9,6 +9,7 @@ config/ssl_domains.json
 config/cloudflare*.ini
 config/backup.conf
 config/monitor.conf
+config/country_block.conf
 
 # 环境特定配置 - 每个环境独立维护
 CLAUDE.md

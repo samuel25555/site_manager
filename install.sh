@@ -762,6 +762,34 @@ setup_catch_all() {
 }
 
 #---------------------------------------
+# 全站国家访问控制（nginx http 级，默认按 config/country_block.conf 生效）
+#---------------------------------------
+setup_country_block() {
+    echo ""
+    log_info "配置全站国家访问控制（nginx http 级）..."
+
+    if ! command -v site &>/dev/null; then
+        log_warn "site 命令不可用，跳过；请稍后执行: site country-block set CN"
+        return 0
+    fi
+
+    local conf="$SCRIPT_DIR/config/country_block.conf"
+    local tpl="$SCRIPT_DIR/config/country_block.conf.template"
+    if [ ! -f "$conf" ] && [ -f "$tpl" ]; then
+        cp "$tpl" "$conf"
+        chmod 644 "$conf"
+    fi
+
+    # shellcheck disable=SC1090
+    [ -f "$conf" ] && source "$conf" 2>/dev/null
+    if [ "${CB_ENABLED:-0}" = "1" ]; then
+        site country-block apply || log_warn "国家访问控制生成失败，可稍后执行: site country-block update"
+    else
+        log_info "国家访问控制默认关闭（CB_ENABLED=0），可用 site country-block on 开启"
+    fi
+}
+
+#---------------------------------------
 # 安装面板
 #---------------------------------------
 install_panel() {
@@ -1057,6 +1085,7 @@ main() {
     install_panel
 
     setup_catch_all
+    setup_country_block
 
     finish_install
 }
