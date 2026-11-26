@@ -618,9 +618,18 @@ _do_site_create() {
         chown -R www:www "$site_path" && chmod -R 755 "$site_path" && find "$site_path" -type f -exec chmod 644 {} \;
     fi
 
+    # country-block 守卫片段（不存在时建空文件，保证 vhost 里的 include 不报错）
+    local cb_snippet="/etc/nginx/snippets/country-block-guard.conf"
+    if [ ! -f "$cb_snippet" ]; then
+        mkdir -p /etc/nginx/snippets
+        printf '# site_manager country-block：未启用\n' > "$cb_snippet"
+        chmod 644 "$cb_snippet"
+    fi
+
     # 生成配置
     cat > "$conf_path" << NGINX
 server {
+    include /etc/nginx/snippets/country-block-guard.conf;  # [country-block]
     listen 80;
     server_name $server_names;
     root $root;

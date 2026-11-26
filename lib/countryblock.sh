@@ -1,7 +1,7 @@
 #!/bin/bash
 # Site Manager —— 全站国家访问控制（country-block）
 #
-# 在 nginx http 级生成 allow/deny（/etc/nginx/conf.d/00-country-block.conf），
+# 生成 http 级 geo 表 + 每个 server 里的守卫 include（默认 return 444），
 # 对现有和以后新建的所有站点生效，不受后台「访问地区控制」影响。
 # 数据源：五大 RIR 官方 delegated 文件（lib/country_block.py 负责下载/汇总）。
 #
@@ -39,6 +39,7 @@ CB_MODE="block"
 CB_COUNTRIES="CN"
 CB_ALLOW_IPS=""
 CB_OUT="/etc/nginx/conf.d/00-country-block.conf"
+CB_STATUS="444"
 EOF
         fi
         chmod 644 "$CB_CONF"
@@ -50,6 +51,7 @@ EOF
     CB_COUNTRIES="${CB_COUNTRIES:-CN}"
     CB_ALLOW_IPS="${CB_ALLOW_IPS:-}"
     CB_OUT="${CB_OUT:-$CB_DEFAULT_OUT}"
+    CB_STATUS="${CB_STATUS:-444}"
 }
 
 cb_save_conf() {
@@ -61,6 +63,7 @@ CB_MODE="$CB_MODE"
 CB_COUNTRIES="$CB_COUNTRIES"
 CB_ALLOW_IPS="$CB_ALLOW_IPS"
 CB_OUT="$CB_OUT"
+CB_STATUS="$CB_STATUS"
 EOF
     chmod 644 "$CB_CONF"
 }
@@ -78,6 +81,7 @@ cb_apply() {
         --mode "$CB_MODE" \
         --countries "$(cb_join $CB_COUNTRIES)" \
         --allow-ips "$(cb_join $CB_ALLOW_IPS)" \
+        --http-status "$CB_STATUS" \
         --log "$CB_LOG" "$@"
 }
 
@@ -89,6 +93,7 @@ cb_status() {
     echo "  模式:      $CB_MODE $([ "$CB_MODE" = "allow" ] && echo '(仅放行列表国家，其余全拦)')"
     echo "  国家:      ${CB_COUNTRIES:-（空）}"
     echo "  白名单 IP: ${CB_ALLOW_IPS:-（无）}"
+    echo "  被拦响应: ${CB_STATUS} $([ "$CB_STATUS" = "444" ] && echo '(直接断开连接，无响应)' || echo '(返回状态码)')"
     echo "  生成文件:  $CB_OUT"
     if [ -f "$CB_OUT" ]; then
         local v4 v6
@@ -263,6 +268,7 @@ cb_menu() {
     echo "  site country-block unallow <IP/CIDR>... 移除白名单"
     echo "  site country-block update               重新拉取 RIR 数据并生效"
     echo "  site country-block cron on|off          每日检查更新开关（缓存 7 天）"
+    echo "  被拦响应: 默认 444（直接断连、无响应）；可改 config 里 CB_STATUS=403"
     echo ""
     echo "说明: 规则写在 nginx http 级（$CB_DEFAULT_OUT），"
     echo "      对现有和以后新建的所有站点生效，与后台「访问地区控制」无关。"
